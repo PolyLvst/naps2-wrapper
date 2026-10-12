@@ -80,6 +80,15 @@ Double-click `install-task.bat` (as the user who is logged in at the scanner PC)
 removes it. Doing it by hand in Task Scheduler works too.
 (Use a logon task rather than a Windows service: WIA/TWAIN generally need an interactive session.)
 
+## Restarting the server after a deploy
+`index.html` and `static/` are read on every request, but `server.py`, `epson_scan.py`, `pause_apps.py` and `config.json` are
+read once at start-up, so after changing them the server must be restarted. On the PC run:
+```
+powershell -ExecutionPolicy Bypass -File restart-server.ps1            # add -DryRun to only show what it would stop
+```
+It stops the process listening on port 8080 and its python launcher (by PID, and only if they run `server.py`), then starts
+the `naps2-wrapper` task again and waits until the page answers (about 45 s). Do not run it during a scan: that scan is lost.
+
 ## LAN access
 Allow inbound TCP 8080 in Windows Firewall. Without a login (see below) there is no authentication, so only expose it on a trusted network.
 
