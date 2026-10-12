@@ -11,22 +11,39 @@
 </script>
 <style type="text/tailwindcss">
   @layer components {
-    .tb { @apply h-9 w-9 rounded border border-transparent text-lg text-slate-700 hover:enabled:border-sky-300 hover:enabled:bg-sky-50 disabled:cursor-default disabled:opacity-40; }
+    .tb { @apply h-11 w-11 rounded md:h-9 md:w-9 border border-transparent text-lg text-slate-700 hover:enabled:border-sky-300 hover:enabled:bg-sky-50 disabled:cursor-default disabled:opacity-40; }
     .tb2 { @apply h-7 w-7 shrink-0 rounded text-neutral-600 hover:bg-sky-100 hover:text-neutral-900; }
     .sep { @apply mx-1.5 h-6 w-px bg-neutral-300; }
     .field { @apply rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-sm; }
   }
 </style>
+<style>
+  /* Touch screens (no hover): hover-only controls become tap-to-reveal, and targets get finger-sized. */
+  @media (hover: none) {
+    .is-sel > .row-actions { display: flex; }
+    .is-sel > .row-size { display: none; }
+    .row-actions .tb2 { height: 2.25rem !important; width: 2.25rem !important; font-size: 0.95rem !important; }
+    .dochead button { padding: 0.5rem 0.6rem; }
+    .menubtn { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+    .filerow { padding-top: 0.45rem; padding-bottom: 0.45rem; }
+  }
+  /* 16px stops iOS from zooming the page when a field gets focus. */
+  @media (pointer: coarse) { input.field, select.field, textarea.field { font-size: 16px; } }
+</style>
 </head>
-<body class="flex h-screen flex-col overflow-hidden bg-bar text-[13px] text-neutral-900" style="font-family: 'Segoe UI', system-ui, sans-serif">
+<body class="flex h-[100dvh] flex-col overflow-hidden bg-bar text-[13px] text-neutral-900" style="font-family: 'Segoe UI', system-ui, sans-serif">
 
 <!-- menu strip -->
-<header class="flex flex-wrap items-center gap-1 border-b border-neutral-300 bg-white px-2 py-1">
+<header class="relative flex flex-wrap items-center gap-1 border-b border-neutral-300 bg-white px-2 py-1">
   <b class="mr-3 font-semibold"><i class="fa-solid fa-file-pdf mr-1 text-accent"></i>Scan Creator</b>
   <nav id="menus" class="flex items-center"></nav>
-  <div class="ml-auto flex flex-wrap items-center gap-3">
+  <div class="ml-auto flex items-center gap-1 md:hidden">
+    <button id="openlib" class="field px-2.5 py-1.5" title="Saved scans"><i class="fa-solid fa-folder-open mr-1 text-amber-500"></i>Saved</button>
+    <button id="opensettings" class="field px-2.5 py-1.5" title="Scanner and scan settings" aria-expanded="false"><i class="fa-solid fa-sliders mr-1"></i>Settings</button>
+  </div>
+  <div id="settings" class="hidden w-full flex-wrap items-center gap-x-4 gap-y-2 border-t border-neutral-200 pt-1.5 md:ml-auto md:flex md:w-auto md:border-0 md:pt-0 md:gap-3">
     <label class="flex items-center gap-1.5"><i class="fa-solid fa-print text-neutral-500"></i>
-      <select id="device" class="field max-w-[16rem]"><option value="">Default</option></select>
+      <select id="device" class="field min-w-0 max-w-[12rem] md:max-w-[16rem]"><option value="">Default</option></select>
       <button id="refresh" class="field hover:bg-sky-50" title="Refresh scanner list"><i class="fa-solid fa-rotate"></i></button>
     </label>
     <label class="flex items-center gap-1.5">Resolution
@@ -42,7 +59,11 @@
 
 <div class="flex min-h-0 flex-1">
   <!-- saved scans -->
-  <aside id="left" class="flex w-[360px] min-w-[200px] flex-col border-r-[6px] border-neutral-400 bg-white">
+  <aside id="left" class="fixed inset-0 z-20 hidden w-full flex-col bg-white md:static md:z-auto md:flex md:w-[360px] md:min-w-[200px] md:border-r-[6px] md:border-neutral-400">
+    <div class="flex items-center border-b border-neutral-300 bg-bar md:hidden">
+      <b class="flex-1 px-3 py-2"><i class="fa-solid fa-folder-open mr-1.5 text-amber-500"></i>Saved scans</b>
+      <button id="closelib" class="h-11 w-11 text-lg" title="Close"><i class="fa-solid fa-xmark"></i></button>
+    </div>
     <div id="path" class="break-all border-b border-neutral-300 bg-bar px-1.5 py-1 text-xs">Saved scans</div>
     <div class="flex items-center gap-1 border-b border-neutral-300 px-1.5 py-1">
       <button id="newfolder" class="tb2" title="New folder in the selected folder"><i class="fa-solid fa-folder-plus"></i></button>
@@ -55,7 +76,7 @@
 
   <section id="right" class="flex min-w-0 flex-1 flex-col">
     <div class="flex flex-wrap items-center gap-0.5 border-b border-neutral-300 bg-white px-2 py-1">
-      <button id="scan" title="Scan a page from the glass" class="mr-1 h-9 rounded bg-accent px-3 text-[13px] font-semibold text-white hover:enabled:bg-accent-dark disabled:cursor-wait disabled:opacity-60"><i class="fa-solid fa-expand mr-1.5"></i>Scan</button>
+      <button id="scan" title="Scan a page from the glass" class="mr-1 h-11 rounded bg-accent px-3 text-[13px] md:h-9 font-semibold text-white hover:enabled:bg-accent-dark disabled:cursor-wait disabled:opacity-60"><i class="fa-solid fa-expand mr-1.5"></i>Scan</button>
       <button id="newdoc" class="tb" title="New document"><i class="fa-solid fa-file-circle-plus"></i></button>
       <button id="download" class="tb" title="Download as PDF"><i class="fa-solid fa-download"></i></button>
       <button id="save" class="tb" title="Save as… (to a folder on the scanner PC)"><i class="fa-solid fa-floppy-disk"></i></button>
@@ -68,13 +89,13 @@
       <span class="sep"></span>
       <button id="view" class="tb" title="Preview selected page"><i class="fa-solid fa-eye"></i></button>
       <button id="print" class="tb" title="Save to the selected folder and open the PDF"><i class="fa-solid fa-up-right-from-square"></i></button>
-      <div id="eta" class="ml-auto pl-3 text-xs text-neutral-600" aria-live="polite"></div>
+      <div id="eta" class="w-full pt-1 text-xs md:ml-auto md:w-auto md:pl-3 md:pt-0 text-neutral-600" aria-live="polite"></div>
     </div>
-    <div id="nextbar" class="hidden items-center gap-3 border-b border-amber-300 bg-amber-50 px-3 py-1.5">
+    <div id="nextbar" class="hidden flex-wrap items-center gap-3 border-b border-amber-300 bg-amber-50 px-3 py-1.5">
       <i class="fa-solid fa-file-circle-plus text-amber-600"></i>
-      <span id="nexttext" class="flex-1"></span>
-      <button id="nextscan" class="rounded bg-accent px-3 py-1 font-semibold text-white hover:bg-accent-dark"><i class="fa-solid fa-expand mr-1.5"></i>Scan next page</button>
-      <button id="nextdone" class="rounded border border-neutral-300 bg-white px-3 py-1 hover:bg-neutral-100">Finish</button>
+      <span id="nexttext" class="min-w-[12rem] flex-1"></span>
+      <button id="nextscan" class="rounded bg-accent px-3 py-2 font-semibold text-white hover:bg-accent-dark md:py-1"><i class="fa-solid fa-expand mr-1.5"></i>Scan next page</button>
+      <button id="nextdone" class="rounded border border-neutral-300 bg-white px-3 py-2 hover:bg-neutral-100 md:py-1 hover:bg-neutral-100">Finish</button>
     </div>
     <div id="work" class="relative flex-1 overflow-auto bg-work p-2">
       <div id="docs"></div>
@@ -86,7 +107,7 @@
 </div>
 
 <div id="status" class="min-h-6 border-t border-neutral-300 bg-bar px-2.5 py-0.5 text-xs">Ready.</div>
-<footer class="bg-bar px-2.5 pb-1 pt-0.5 text-right text-[11px] text-neutral-500">
+<footer class="bg-bar px-2.5 pb-1 pt-0.5 text-right text-[11px] text-neutral-500" style="padding-bottom: max(0.25rem, env(safe-area-inset-bottom))">
   Made by <a class="hover:underline" href="https://github.com/PolyLvst" target="_blank" rel="noopener"><i class="fa-brands fa-github"></i> github.com/PolyLvst</a>
 </footer>
 <div id="modal" class="fixed inset-0 z-10 hidden items-center justify-center bg-black/80"><img id="big" alt="" class="max-h-[92vh] max-w-[92vw] bg-white"></div>
@@ -168,14 +189,15 @@ function renderView() {
     el.className = DOC_BASE + (d.id === curDoc ? "border-accent" : "border-transparent");
     el.onclick = () => { curDoc = d.id; render(); };
     const head = document.createElement("div");
-    head.className = "flex cursor-grab items-center gap-1.5 px-1.5 py-1";
-    const title = document.createElement("div"); title.className = "flex-1 cursor-text";
+    head.className = "dochead flex cursor-grab items-center gap-1.5 px-1.5 py-1";
+    const title = document.createElement("div"); title.className = "doctitle flex-1 cursor-text"; el.dataset.doc = d.id;
     title.textContent = `${d.name} (Pages: ${d.pages.length})`;
     title.ondblclick = e => { e.stopPropagation(); rename(d, title); };
+    const rn = btn("fa-pen", "Rename document", e => { e.stopPropagation(); rename(d, title); });
     const dl = btn("fa-download", "Download as PDF", e => { e.stopPropagation(); curDoc = d.id; downloadDoc(); });
     const sv = btn("fa-floppy-disk", "Save as…", e => { e.stopPropagation(); curDoc = d.id; saveAs(); });
     const cl = btn("fa-xmark", "Close document", e => { e.stopPropagation(); closeDoc(d); });
-    head.append(title, dl, sv, cl);
+    head.append(title, rn, dl, sv, cl);
     head.draggable = true;
     head.ondragstart = e => startDrag(e, "doc:" + d.id, el);
     head.ondragend = () => el.classList.remove("opacity-40");
@@ -531,6 +553,7 @@ async function openInWorkspace(path) {
     snap();
     const d = newDoc(); d.name = r.name; d.pages = r.pages; d.selPage = null;
     r.pages.forEach(p => known.add(p));  // after they are in a document, or purge() would delete them
+    closeLib();
     say(`Opened ${r.pages.length} page${r.pages.length === 1 ? "" : "s"}. Saving creates a new file; the original is not changed.`);
     render();
   } catch (e) { say("Open failed: " + e.message, true); }
@@ -570,7 +593,7 @@ function act(icon, tip, fn) {
   b.innerHTML = `<i class="fa-solid ${icon}"></i>`; b.onclick = e => { e.stopPropagation(); fn(); }; return b;
 }
 function actions(...btns) {
-  const box = document.createElement("span"); box.className = "ml-auto hidden shrink-0 gap-0.5 group-hover:flex"; box.append(...btns); return box;
+  const box = document.createElement("span"); box.className = "row-actions ml-auto hidden shrink-0 gap-0.5 group-hover:flex"; box.append(...btns); return box;
 }
 async function libCall(fn, okMsg) {
   try { await fn(); if (okMsg) say(okMsg); await loadFiles(); } catch (e) { say(e.message, true); }
@@ -622,8 +645,8 @@ function renderLibrary() {
 
   const fileRow = (f, depth, showPath) => {
     const row = document.createElement("div");
-    row.className = "group flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-1.5 " +
-      (f.path === selFile ? "bg-sel" : "hover:bg-sky-50");
+    row.className = "filerow group flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-1.5 " +
+      (f.path === selFile ? "is-sel bg-sel" : "hover:bg-sky-50");
     row.style.cssText = pad(depth); row.title = f.path + "\n" + fmtSize(f.size) + " · " + new Date(f.mtime * 1000).toLocaleString();
     row.innerHTML = '<i class="fa-solid fa-file-pdf w-4 text-center text-red-600"></i>';
     const name = document.createElement("span"); name.className = "truncate"; name.textContent = baseName(f.path);
@@ -631,7 +654,7 @@ function renderLibrary() {
     if (showPath && parentOf(f.path)) {
       const loc = document.createElement("span"); loc.className = "truncate text-xs text-neutral-400"; loc.textContent = parentOf(f.path); row.append(loc);
     }
-    const size = document.createElement("span"); size.className = "ml-auto shrink-0 text-xs text-neutral-400 group-hover:hidden"; size.textContent = fmtSize(f.size);
+    const size = document.createElement("span"); size.className = "row-size ml-auto shrink-0 text-xs text-neutral-400 group-hover:hidden"; size.textContent = fmtSize(f.size);
     row.append(size, actions(
       act("fa-file-import", "Open in workspace to edit (saves as a new file)", () => openInWorkspace(f.path)),
       act("fa-eye", "Open", () => openFile(f.path)), act("fa-download", "Download", () => downloadFile(f.path)),
@@ -644,8 +667,8 @@ function renderLibrary() {
   const folderRow = (path, depth) => {
     const open = expanded.has(path), root = path === "";
     const row = document.createElement("div");
-    row.className = "group flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-1.5 " +
-      (path === curFolder ? "bg-sel" : "hover:bg-sky-50");
+    row.className = "filerow group flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-1.5 " +
+      (path === curFolder ? "is-sel bg-sel" : "hover:bg-sky-50");
     row.style.cssText = pad(depth);
     row.innerHTML = `<i class="fa-solid ${open ? "fa-chevron-down" : "fa-chevron-right"} w-3 text-[10px] text-neutral-500"></i>` +
       `<i class="fa-solid ${open ? "fa-folder-open" : "fa-folder"} w-4 text-center text-amber-500"></i>`;
@@ -725,6 +748,17 @@ async function loadDevices(force) {
 $("device").onchange = () => { try { localStorage.setItem("device", $("device").value); } catch {} };
 $("refresh").onclick = () => loadDevices(true);
 
+// Phone layout: the saved-scans list is a full-screen panel and the scan settings fold away.
+const openLib = () => { $("left").classList.replace("hidden", "flex"); loadFiles(); };
+function closeLib() { $("left").classList.replace("flex", "hidden"); }
+$("openlib").onclick = openLib;
+$("closelib").onclick = closeLib;
+$("opensettings").onclick = () => {
+  const box = $("settings"), open = box.classList.contains("hidden");
+  box.classList.toggle("hidden", !open); box.classList.toggle("flex", open);
+  $("opensettings").setAttribute("aria-expanded", String(open));
+};
+
 $("scan").onclick = scan;
 $("newdoc").onclick = newDoc;
 $("download").onclick = downloadDoc;
@@ -771,6 +805,7 @@ const MENUS = {
   ],
   Edit: [
     ["Undo", undo, () => undoStack.length > 0, "Ctrl+Z"],
+    ["Rename document", () => { const d = doc(), t = d && document.querySelector(`[data-doc="${d.id}"] .doctitle`); if (t) rename(d, t); }, () => !!doc()],
     ["Delete selected", deleteSel, () => !!doc(), "Del"],
     ["Combine all documents", combineAll, () => docs.filter(x => x.pages.length).length > 1],
   ],
@@ -805,11 +840,11 @@ function showMenu(wrap) {
   list.classList.remove("hidden"); wrap.firstChild.setAttribute("aria-expanded", "true");
 }
 for (const label of Object.keys(MENUS)) {
-  const wrap = document.createElement("div"); wrap.className = "relative"; wrap.dataset.label = label;
+  const wrap = document.createElement("div"); wrap.className = "md:relative"; wrap.dataset.label = label;
   const b = document.createElement("button"); b.textContent = label; b.setAttribute("aria-expanded", "false");
-  b.className = "rounded px-2 py-0.5 hover:bg-sky-100 aria-expanded:bg-sky-100";
+  b.className = "menubtn rounded px-2 py-0.5 hover:bg-sky-100 aria-expanded:bg-sky-100";
   const list = document.createElement("div");
-  list.className = "absolute left-0 top-full z-30 hidden min-w-[230px] border border-neutral-300 bg-white py-1 shadow-lg";
+  list.className = "absolute left-1 right-1 top-full z-30 hidden min-w-[230px] md:left-0 md:right-auto border border-neutral-300 bg-white py-1 shadow-lg";
   b.onclick = e => { e.stopPropagation(); menuOpen && !list.classList.contains("hidden") ? closeMenus() : showMenu(wrap); };
   wrap.onmouseenter = () => { if (menuOpen) showMenu(wrap); };
   wrap.append(b, list); $("menus").append(wrap);
