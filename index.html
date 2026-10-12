@@ -29,6 +29,7 @@
   }
   /* 16px stops iOS from zooming the page when a field gets focus. */
   @media (pointer: coarse) { input.field, select.field, textarea.field { font-size: 16px; } }
+  #hurry[aria-pressed="true"] { background: #fbbf24; border-color: #d97706; color: #1f1f1f; box-shadow: 0 0 0 2px #fde68a; }
 </style>
 </head>
 <body class="flex h-[100dvh] flex-col overflow-hidden bg-bar text-[13px] text-neutral-900" style="font-family: 'Segoe UI', system-ui, sans-serif">
@@ -50,7 +51,6 @@
       <select id="dpi" class="field"><option>150</option><option selected>200</option><option>300</option><option>600</option></select>
     </label>
     <label class="flex items-center gap-1.5" title="After each scan, offer to scan the next page"><input id="continuous" type="checkbox" class="h-4 w-4 accent-[#e04040]">Continuous</label>
-    <label class="flex items-center gap-1.5" title="Fastest sensible settings: 150 dpi. The scanner itself needs about 25 s per page whatever you pick, but 300 dpi colour takes about 70 s. The first scan after a pause is ~15 s slower (warm-up)."><input id="hurry" type="checkbox" class="h-4 w-4 accent-[#e04040]"><i class="fa-solid fa-bolt text-amber-500"></i>Hurry</label>
     <label class="flex items-center gap-1.5">Color
       <select id="mode" class="field"><option value="color">Color</option><option value="gray">Grayscale</option><option value="bw">Black &amp; white</option></select>
     </label>
@@ -77,6 +77,7 @@
   <section id="right" class="flex min-w-0 flex-1 flex-col">
     <div class="flex flex-wrap items-center gap-0.5 border-b border-neutral-300 bg-white px-2 py-1">
       <button id="scan" title="Scan a page from the glass" class="mr-1 h-11 rounded bg-accent px-3 text-[13px] md:h-9 font-semibold text-white hover:enabled:bg-accent-dark disabled:cursor-wait disabled:opacity-60"><i class="fa-solid fa-expand mr-1.5"></i>Scan</button>
+      <button id="hurry" aria-pressed="false" title="Fast Scan Mode: scans at 150 dpi, the fastest sensible setting (the resolution is locked while it is on). 300 dpi colour takes several times longer. The first scan after a pause is slower (warm-up)." class="mr-2 h-11 rounded-full border-2 border-amber-400 bg-white px-3.5 text-[13px] font-semibold text-amber-700 hover:bg-amber-50 md:h-9"><i class="fa-solid fa-bolt mr-1"></i>Fast<span class="hidden md:inline">&nbsp;Scan Mode</span></button>
       <button id="newdoc" class="tb" title="New document"><i class="fa-solid fa-file-circle-plus"></i></button>
       <button id="download" class="tb" title="Download as PDF"><i class="fa-solid fa-download"></i></button>
       <button id="save" class="tb" title="Save as… (to a folder on the scanner PC)"><i class="fa-solid fa-floppy-disk"></i></button>
@@ -353,11 +354,26 @@ function renderEta() {
   if (!e) { box.append("No estimate for these settings yet. Scan a page to learn it."); return; }
   let t = `≈ ${fmt(e.sec)}/page (${e.n ? `average of last ${e.n}` : "typical for this scanner"})` +
           ` · 5 more pages: ${fmt(5 * e.sec)} · 10 more: ${fmt(10 * e.sec)}`;
-  if ($("hurry").checked) {
+  if (fastOn()) {
+    t = `⚡ Fast Scan Mode: 150 dpi · ` + t;
     const slow = estimate(setKey("300", $("mode").value));
-    if (slow && slow.sec - e.sec > 5) t += ` · Hurry saves ≈ ${fmt(slow.sec - e.sec)}/page vs 300 dpi`;
+    if (slow && slow.sec - e.sec > 5) t += ` · Fast Scan Mode saves ≈ ${fmt(slow.sec - e.sec)}/page vs 300 dpi`;
   }
   box.append(t);
+  if (e.n) {   // only a learned average can be forgotten; the built-in typical value stays
+    const b = document.createElement("button");
+    b.className = "ml-1.5 rounded px-1.5 py-0.5 text-neutral-500 hover:bg-sky-100 hover:text-neutral-900";
+    b.title = "Forget the learned average for these settings"; b.setAttribute("aria-label", b.title);
+    b.innerHTML = '<i class="fa-solid fa-rotate-left"></i>'; b.onclick = forgetEstimate;
+    box.append(b);
+  }
+}
+function forgetEstimate() {
+  const key = setKey();
+  if (!times[key]) return;
+  delete times[key];
+  try { localStorage.setItem("scanTimes", JSON.stringify(times)); } catch {}
+  renderEta(); say(`Forgot the learned scan time for ${$("dpi").value} dpi ${$("mode").selectedOptions[0].text.toLowerCase()}; it is learned again from your next scans.`);
 }
 let scanTimer = null, scanPhase = "preparing", phaseT0 = 0;
 const PHASE_TEXT = {
@@ -392,11 +408,13 @@ function startCountdown(est) {
 }
 function stopCountdown() { clearInterval(scanTimer); scanTimer = null; }
 
-// ---- hurry mode: 150 dpi (the sweet spot on this scanner) ----
-function applyHurry(restoreFromStorage) {
+// ---- Fast Scan Mode: 150 dpi (the sweet spot on this scanner) ----
+const fastOn = () => $("hurry").getAttribute("aria-pressed") === "true";
+function setFast(on, announce) {
   const store = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} };
   const get = k => { try { return localStorage.getItem(k); } catch { return null; } };
-  if ($("hurry").checked) {
+  $("hurry").setAttribute("aria-pressed", String(on));
+  if (on) {
     if (!get("dpiBeforeHurry")) store("dpiBeforeHurry", $("dpi").value);
     $("dpi").value = "150"; $("dpi").disabled = true;
   } else {
@@ -404,11 +422,12 @@ function applyHurry(restoreFromStorage) {
     if (prev) $("dpi").value = prev;
     store("dpiBeforeHurry", null); $("dpi").disabled = false;
   }
-  store("hurry", $("hurry").checked ? "1" : "0");
+  store("hurry", on ? "1" : "0");
   renderEta();
+  if (announce) { const e = estimate(); say(on ? `Fast Scan Mode on: 150 dpi${e ? `, about ${fmt(e.sec)} per page` : ""}.` : "Fast Scan Mode off."); }
 }
-try { $("hurry").checked = localStorage.getItem("hurry") === "1"; } catch {}
-$("hurry").onchange = applyHurry;
+try { $("hurry").setAttribute("aria-pressed", String(localStorage.getItem("hurry") === "1")); } catch {}
+$("hurry").onclick = () => setFast(!fastOn(), true);
 $("dpi").onchange = $("mode").onchange = renderEta;
 
 // The server pushes scan progress over a WebSocket (fast path). The scan is also a background job that is polled
@@ -851,7 +870,7 @@ for (const label of Object.keys(MENUS)) {
 }
 document.addEventListener("click", closeMenus);
 
-if ($("hurry").checked) { $("dpi").value = "150"; $("dpi").disabled = true; }
+if (fastOn()) { $("dpi").value = "150"; $("dpi").disabled = true; }
 renderEta();
 api("GET", "/me").then(me => { authOn = me.auth; if (me.auth) say(`Signed in as ${me.user}.`); });
 connectWS();
