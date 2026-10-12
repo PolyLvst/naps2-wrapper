@@ -1,0 +1,11 @@
+{
+  "NAPS2_PATH": "C:\\Program Files\\NAPS2\\NAPS2.Console.exe",
+  "SCANNER_DRIVER": "wia",
+  "SCANNER_DEVICE": "EPSON L3110 Series",
+  "PORT": 8080,
+  "SCAN_ENGINE": "wia",
+  "AUTH_USER": "",
+  "AUTH_PASSWORD": "",
+  "PAUSE_APPS": [],
+  "PAUSE_RESUME_AFTER": 120
+}

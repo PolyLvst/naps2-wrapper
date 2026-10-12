@@ -1,0 +1,826 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scan Creator</title>
+<script src="/static/tailwind.js"></script>
+<link rel="stylesheet" href="/static/fontawesome/css/all.min.css">
+<script>
+  tailwind.config = { theme: { extend: { colors: { accent: "#e04040", "accent-dark": "#c93030", work: "#2b2b2b", bar: "#f7f7f7", sel: "#cde3fb" } } } };
+</script>
+<style type="text/tailwindcss">
+  @layer components {
+    .tb { @apply h-9 w-9 rounded border border-transparent text-lg text-slate-700 hover:enabled:border-sky-300 hover:enabled:bg-sky-50 disabled:cursor-default disabled:opacity-40; }
+    .tb2 { @apply h-7 w-7 shrink-0 rounded text-neutral-600 hover:bg-sky-100 hover:text-neutral-900; }
+    .sep { @apply mx-1.5 h-6 w-px bg-neutral-300; }
+    .field { @apply rounded border border-neutral-300 bg-white px-1.5 py-0.5 text-sm; }
+  }
+</style>
+</head>
+<body class="flex h-screen flex-col overflow-hidden bg-bar text-[13px] text-neutral-900" style="font-family: 'Segoe UI', system-ui, sans-serif">
+
+<!-- menu strip -->
+<header class="flex flex-wrap items-center gap-1 border-b border-neutral-300 bg-white px-2 py-1">
+  <b class="mr-3 font-semibold"><i class="fa-solid fa-file-pdf mr-1 text-accent"></i>Scan Creator</b>
+  <nav id="menus" class="flex items-center"></nav>
+  <div class="ml-auto flex flex-wrap items-center gap-3">
+    <label class="flex items-center gap-1.5"><i class="fa-solid fa-print text-neutral-500"></i>
+      <select id="device" class="field max-w-[16rem]"><option value="">Default</option></select>
+      <button id="refresh" class="field hover:bg-sky-50" title="Refresh scanner list"><i class="fa-solid fa-rotate"></i></button>
+    </label>
+    <label class="flex items-center gap-1.5">Resolution
+      <select id="dpi" class="field"><option>150</option><option selected>200</option><option>300</option><option>600</option></select>
+    </label>
+    <label class="flex items-center gap-1.5" title="After each scan, offer to scan the next page"><input id="continuous" type="checkbox" class="h-4 w-4 accent-[#e04040]">Continuous</label>
+    <label class="flex items-center gap-1.5" title="Fastest sensible settings: 150 dpi. The scanner itself needs about 25 s per page whatever you pick, but 300 dpi colour takes about 70 s. The first scan after a pause is ~15 s slower (warm-up)."><input id="hurry" type="checkbox" class="h-4 w-4 accent-[#e04040]"><i class="fa-solid fa-bolt text-amber-500"></i>Hurry</label>
+    <label class="flex items-center gap-1.5">Color
+      <select id="mode" class="field"><option value="color">Color</option><option value="gray">Grayscale</option><option value="bw">Black &amp; white</option></select>
+    </label>
+  </div>
+</header>
+
+<div class="flex min-h-0 flex-1">
+  <!-- saved scans -->
+  <aside id="left" class="flex w-[360px] min-w-[200px] flex-col border-r-[6px] border-neutral-400 bg-white">
+    <div id="path" class="break-all border-b border-neutral-300 bg-bar px-1.5 py-1 text-xs">Saved scans</div>
+    <div class="flex items-center gap-1 border-b border-neutral-300 px-1.5 py-1">
+      <button id="newfolder" class="tb2" title="New folder in the selected folder"><i class="fa-solid fa-folder-plus"></i></button>
+      <button id="reload" class="tb2" title="Refresh"><i class="fa-solid fa-rotate"></i></button>
+      <button id="sort" class="tb2" title="Sorted by name (click for newest first)"><i class="fa-solid fa-arrow-down-a-z"></i></button>
+      <input id="search" type="search" placeholder="Search PDFs" class="field min-w-0 flex-1">
+    </div>
+    <div id="files" class="flex-1 overflow-auto py-0.5"></div>
+  </aside>
+
+  <section id="right" class="flex min-w-0 flex-1 flex-col">
+    <div class="flex flex-wrap items-center gap-0.5 border-b border-neutral-300 bg-white px-2 py-1">
+      <button id="scan" title="Scan a page from the glass" class="mr-1 h-9 rounded bg-accent px-3 text-[13px] font-semibold text-white hover:enabled:bg-accent-dark disabled:cursor-wait disabled:opacity-60"><i class="fa-solid fa-expand mr-1.5"></i>Scan</button>
+      <button id="newdoc" class="tb" title="New document"><i class="fa-solid fa-file-circle-plus"></i></button>
+      <button id="download" class="tb" title="Download as PDF"><i class="fa-solid fa-download"></i></button>
+      <button id="save" class="tb" title="Save as… (to a folder on the scanner PC)"><i class="fa-solid fa-floppy-disk"></i></button>
+      <button id="del" class="tb" title="Delete selected page / document (Del)"><i class="fa-solid fa-trash"></i></button>
+      <button id="undo" class="tb" title="Undo (Ctrl+Z)"><i class="fa-solid fa-rotate-left"></i></button>
+      <span class="sep"></span>
+      <button id="pgleft" class="tb" title="Move page left"><i class="fa-solid fa-arrow-left"></i></button>
+      <button id="pgright" class="tb" title="Move page right"><i class="fa-solid fa-arrow-right"></i></button>
+      <button id="combine" class="tb flex items-center justify-center" title="Combine all documents into the first one"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg></button>
+      <span class="sep"></span>
+      <button id="view" class="tb" title="Preview selected page"><i class="fa-solid fa-eye"></i></button>
+      <button id="print" class="tb" title="Save to the selected folder and open the PDF"><i class="fa-solid fa-up-right-from-square"></i></button>
+      <div id="eta" class="ml-auto pl-3 text-xs text-neutral-600" aria-live="polite"></div>
+    </div>
+    <div id="nextbar" class="hidden items-center gap-3 border-b border-amber-300 bg-amber-50 px-3 py-1.5">
+      <i class="fa-solid fa-file-circle-plus text-amber-600"></i>
+      <span id="nexttext" class="flex-1"></span>
+      <button id="nextscan" class="rounded bg-accent px-3 py-1 font-semibold text-white hover:bg-accent-dark"><i class="fa-solid fa-expand mr-1.5"></i>Scan next page</button>
+      <button id="nextdone" class="rounded border border-neutral-300 bg-white px-3 py-1 hover:bg-neutral-100">Finish</button>
+    </div>
+    <div id="work" class="relative flex-1 overflow-auto bg-work p-2">
+      <div id="docs"></div>
+      <div class="pointer-events-none absolute inset-x-0 bottom-10 text-center font-semibold text-neutral-300">
+        <i class="fa-solid fa-layer-group mb-2 block text-6xl opacity-40"></i>Press Scan to add a page to the document
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="status" class="min-h-6 border-t border-neutral-300 bg-bar px-2.5 py-0.5 text-xs">Ready.</div>
+<footer class="bg-bar px-2.5 pb-1 pt-0.5 text-right text-[11px] text-neutral-500">
+  Made by <a class="hover:underline" href="https://github.com/PolyLvst" target="_blank" rel="noopener"><i class="fa-brands fa-github"></i> github.com/PolyLvst</a>
+</footer>
+<div id="modal" class="fixed inset-0 z-10 hidden items-center justify-center bg-black/80"><img id="big" alt="" class="max-h-[92vh] max-w-[92vw] bg-white"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let docs = [];            // [{id, name, pages:[pageId], selPage}]
+let curDoc = null;        // selected doc id
+let docSeq = 0;
+let selFile = null;  // path of the highlighted saved PDF
+let scanningId = null;           // id of the document a scan is currently adding to
+const undoStack = [];            // snapshots of {docs, curDoc}, newest last
+const known = new Set();         // every page id scanned this session
+const UNDO_LIMIT = 50;
+
+// Call right before any change to docs. Pages stay on the server until nothing can undo back to them.
+function snap() {
+  undoStack.push(structuredClone({ docs, curDoc }));
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  purge();
+}
+function undo() {
+  const s = undoStack.pop(); if (!s) return say("Nothing to undo.");
+  docs = s.docs; curDoc = docs.some(d => d.id === s.curDoc) ? s.curDoc : (docs.length ? docs[docs.length - 1].id : null);
+  say("Undone."); render();
+}
+function purge() {
+  const used = new Set(docs.flatMap(d => d.pages));
+  for (const s of undoStack) for (const d of s.docs) d.pages.forEach(p => used.add(p));
+  for (const id of [...known]) if (!used.has(id)) { known.delete(id); fetch("/page/" + id, { method: "DELETE" }); }
+}
+
+const doc = () => docs.find(d => d.id === curDoc);
+function say(msg, err) {
+  const s = $("status"); s.textContent = msg;
+  s.classList.toggle("text-red-700", !!err); s.classList.toggle("font-semibold", !!err);
+}
+
+function newDoc() {
+  const now = new Date(), p = n => String(n).padStart(2, "0");
+  const d = { id: ++docSeq, pages: [], selPage: null,
+              name: `Scan ${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ${p(now.getHours())}.${p(now.getMinutes())}` };
+  docs.push(d); curDoc = d.id; render(); return d;
+}
+
+const DOC_BASE = "doc mb-2 border-2 bg-neutral-100 ";
+const PAGE_BASE = "page shrink-0 cursor-pointer border-2 p-0.5 ";
+const TRANSPARENT_BG = "bg-[length:8px_8px] bg-[repeating-conic-gradient(#ddd_0_25%,#f3f3f3_0_50%)] ";
+const ICON_BTN = "px-1 text-[15px] text-neutral-700 hover:text-accent";
+
+// The workspace (documents and their page ids) survives refresh/close: page images live on the server.
+function persist() {
+  try { localStorage.setItem("workspace", JSON.stringify({ docs, curDoc, docSeq })); } catch {}
+}
+async function restoreWorkspace() {
+  let saved; try { saved = JSON.parse(localStorage.getItem("workspace") || "null"); } catch {}
+  if (!saved || !Array.isArray(saved.docs)) return false;
+  const ids = [...new Set(saved.docs.flatMap(d => d.pages || []))].filter(id => /^[0-9a-f]{32}$/.test(id));
+  const alive = new Set();
+  await Promise.all(ids.map(id => fetch("/page/" + id).then(r => { if (r.ok) alive.add(id); }).catch(() => {})));
+  const restored = saved.docs.map(d => ({ id: d.id, name: d.name, pages: (d.pages || []).filter(p => alive.has(p)), selPage: null }))
+                             .filter(d => d.pages.length);
+  if (!restored.length) return false;
+  docs = restored; docSeq = Math.max(saved.docSeq || 0, ...docs.map(d => d.id));
+  curDoc = docs.some(d => d.id === saved.curDoc) ? saved.curDoc : docs[docs.length - 1].id;
+  alive.forEach(id => known.add(id));
+  render(); say("Restored your previous workspace.");
+  return true;
+}
+window.addEventListener("beforeunload", e => {
+  if (docs.some(d => d.pages.length)) { e.preventDefault(); e.returnValue = ""; }  // browser shows its own "Leave site?" prompt
+});
+
+function render() { renderView(); persist(); }
+function renderView() {
+  const root = $("docs"); root.innerHTML = "";
+  for (const d of docs) {
+    const el = document.createElement("div");
+    el.className = DOC_BASE + (d.id === curDoc ? "border-accent" : "border-transparent");
+    el.onclick = () => { curDoc = d.id; render(); };
+    const head = document.createElement("div");
+    head.className = "flex cursor-grab items-center gap-1.5 px-1.5 py-1";
+    const title = document.createElement("div"); title.className = "flex-1 cursor-text";
+    title.textContent = `${d.name} (Pages: ${d.pages.length})`;
+    title.ondblclick = e => { e.stopPropagation(); rename(d, title); };
+    const dl = btn("fa-download", "Download as PDF", e => { e.stopPropagation(); curDoc = d.id; downloadDoc(); });
+    const sv = btn("fa-floppy-disk", "Save as…", e => { e.stopPropagation(); curDoc = d.id; saveAs(); });
+    const cl = btn("fa-xmark", "Close document", e => { e.stopPropagation(); closeDoc(d); });
+    head.append(title, dl, sv, cl);
+    head.draggable = true;
+    head.ondragstart = e => startDrag(e, "doc:" + d.id, el);
+    head.ondragend = () => el.classList.remove("opacity-40");
+    el.ondragover = e => { if (dragging) { e.preventDefault(); el.classList.add("outline", "outline-2", "outline-dashed", "outline-sky-500", "-outline-offset-2"); } };
+    el.ondragleave = e => { if (!el.contains(e.relatedTarget)) clearOver(el); };
+    el.ondrop = e => { e.preventDefault(); dropOnDoc(d); };
+    const pages = document.createElement("div");
+    pages.className = "pages mx-0.5 mb-0.5 flex min-h-[60px] gap-1.5 overflow-x-auto bg-neutral-200 px-1.5 pb-2 pt-1";
+    for (const pid of d.pages) {
+      const pg = document.createElement("div");
+      pg.className = PAGE_BASE + TRANSPARENT_BG + (d.selPage === pid ? "border-sky-600" : "border-transparent");
+      pg.onclick = e => { e.stopPropagation(); curDoc = d.id; d.selPage = pid; render(); };
+      pg.ondblclick = () => preview(pid);
+      pg.draggable = true;
+      pg.ondragstart = e => { e.stopPropagation(); startDrag(e, "page:" + pid, pg); };
+      pg.ondragend = () => pg.classList.remove("opacity-40");
+      pg.ondragover = e => {
+        if (!dragging || !dragging.startsWith("page:")) return;
+        e.preventDefault(); e.stopPropagation();
+        const after = e.offsetX > pg.clientWidth / 2;
+        pg.classList.toggle(AFTER, after); pg.classList.toggle(BEFORE, !after);
+      };
+      pg.ondragleave = () => pg.classList.remove(BEFORE, AFTER);
+      pg.ondrop = e => {
+        if (!dragging || !dragging.startsWith("page:")) return;
+        e.preventDefault(); e.stopPropagation();
+        dropOnPage(d, pid, e.offsetX > pg.clientWidth / 2);
+      };
+      const img = document.createElement("img"); img.src = "/page/" + pid; img.className = "block h-[190px] bg-white";
+      pg.append(img); pages.append(pg);
+    }
+    if (d.id === scanningId) {
+      const l = document.createElement("div");
+      l.className = "flex h-[194px] w-[134px] shrink-0 items-center justify-center gap-2 text-neutral-500";
+      l.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><span id="scanprog">Scanning…</span>'; pages.append(l);
+    }
+    el.append(head, pages); root.append(el);
+  }
+  const d = doc();
+  $("download").disabled = $("save").disabled = $("print").disabled = !d || !d.pages.length;
+  $("del").disabled = !d;
+  $("undo").disabled = !undoStack.length;
+  $("view").disabled = $("pgleft").disabled = $("pgright").disabled = !d || !d.selPage;
+  $("combine").disabled = docs.filter(x => x.pages.length).length < 2;
+}
+const BEFORE = "shadow-[-4px_0_0_#3a85d6]", AFTER = "shadow-[4px_0_0_#3a85d6]";
+function clearOver(el) { el.classList.remove("outline", "outline-2", "outline-dashed", "outline-sky-500", "-outline-offset-2"); }
+
+// ---- drag & drop: reorder pages, move them between documents, merge documents ----
+let dragging = null;   // "page:<id>" | "doc:<id>"
+function startDrag(e, payload, el) {
+  dragging = payload; el.classList.add("opacity-40");
+  e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", payload);
+}
+function takePage(pid) {  // remove a page from whichever doc holds it
+  for (const d of docs) {
+    const i = d.pages.indexOf(pid);
+    if (i >= 0) { d.pages.splice(i, 1); if (d.selPage === pid) d.selPage = null; return d; }
+  }
+}
+function dropOnPage(target, beforeId, after) {
+  const pid = dragging.slice(5); dragging = null;
+  if (pid === beforeId) return render();
+  snap(); takePage(pid);
+  let i = target.pages.indexOf(beforeId); if (after) i++;
+  target.pages.splice(i, 0, pid); target.selPage = pid; curDoc = target.id; render();
+}
+function dropOnDoc(target) {
+  const p = dragging; dragging = null;
+  if (!p) return render();
+  snap();
+  if (p.startsWith("page:")) {
+    const pid = p.slice(5); takePage(pid);
+    target.pages.push(pid); target.selPage = pid; curDoc = target.id;
+  } else {
+    const src = docs.find(x => x.id === +p.slice(4));
+    if (src && src !== target) mergeInto(target, src);
+  }
+  render();
+}
+function mergeInto(target, src) {
+  target.pages.push(...src.pages); docs = docs.filter(x => x !== src); curDoc = target.id;
+}
+function combineAll() {
+  const live = docs.filter(x => x.pages.length);
+  if (live.length < 2) return;
+  snap();
+  const first = live[0];
+  for (const x of live.slice(1)) mergeInto(first, x);
+  docs = docs.filter(x => x === first || x.pages.length);  // also drops empty documents
+  say(`Combined into "${first.name}" (${first.pages.length} pages).`); render();
+}
+document.addEventListener("dragend", () => { dragging = null; });
+function btn(icon, tip, fn) {
+  const b = document.createElement("button"); b.className = ICON_BTN; b.title = tip; b.onclick = fn;
+  b.innerHTML = `<i class="fa-solid ${icon}"></i>`; return b;
+}
+
+function rename(d, el) {
+  const inp = document.createElement("input"); inp.value = d.name; inp.className = "field w-3/5";
+  el.textContent = ""; el.append(inp); inp.focus(); inp.select();
+  const done = () => { d.name = inp.value.trim() || d.name; render(); };
+  inp.onblur = done; inp.onkeydown = e => { if (e.key === "Enter") done(); if (e.key === "Escape") render(); };
+  inp.onclick = e => e.stopPropagation();
+}
+
+function closeDoc(d) {
+  snap();
+  docs = docs.filter(x => x !== d);
+  curDoc = docs.length ? docs[docs.length - 1].id : null;
+  say("Document closed. Press Ctrl+Z to undo."); render();
+}
+
+// ---- scan time estimates (Epson L3110 numbers measured with NAPS2 over WIA, used until real scans are timed) ----
+const PRIOR = { "100-color": 24, "150-color": 26, "200-color": 51, "300-color": 70, "100-gray": 25, "150-gray": 29, "300-gray": 34, "150-bw": 26 };
+let times = {};   // "dpi-mode" -> last few real scan durations in seconds
+try { times = JSON.parse(localStorage.getItem("scanTimes") || "{}"); } catch {}
+// Epson-engine timings saved by early builds included waits for the scanner (80 s+ per page): drop them once.
+try {
+  if (localStorage.getItem("scanTimesV") !== "2") {
+    for (const k of Object.keys(times)) if (k.startsWith("epson:")) delete times[k];
+    localStorage.setItem("scanTimes", JSON.stringify(times)); localStorage.setItem("scanTimesV", "2");
+  }
+} catch {}
+function resetEstimates() {
+  times = {};
+  try { localStorage.setItem("scanTimes", "{}"); } catch {}
+  renderEta(); say("Scan time estimates reset; they are learned again from your next scans.");
+}
+// Epson Scan 2 engine: first guesses from the Epson Scan 2 window (150 dpi 11 s, 300 dpi 33 s), refined by real scans.
+const PRIOR_EPSON = { "100-color": 8, "100-gray": 7, "150-color": 11, "150-gray": 10, "150-bw": 10, "200-color": 30, "300-color": 33, "300-gray": 30 };
+let engine = "wia";   // set from /devices; timings are kept separately per engine ("epson:150-color")
+const setKey = (dpi = $("dpi").value, mode = $("mode").value) => `${engine === "epson" ? "epson:" : ""}${dpi}-${mode}`;
+function estimate(key = setKey()) {
+  const obs = times[key];
+  if (obs && obs.length) return { sec: obs.reduce((a, b) => a + b, 0) / obs.length, n: obs.length };
+  const prior = key.startsWith("epson:") ? PRIOR_EPSON[key.slice(6)] : PRIOR[key];
+  return prior ? { sec: prior, n: 0 } : null;
+}
+function recordTime(key, sec) {
+  times[key] = [...(times[key] || []), sec].slice(-5);
+  try { localStorage.setItem("scanTimes", JSON.stringify(times)); } catch {}
+  renderEta();
+}
+function fmt(sec) {
+  const s = Math.round(sec), m = Math.floor(s / 60);
+  return m ? `${m}m ${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+function renderEta() {
+  const box = $("eta"), e = estimate();
+  box.textContent = "";
+  const icon = document.createElement("i"); icon.className = "fa-solid fa-stopwatch mr-1"; box.append(icon);
+  if (!e) { box.append("No estimate for these settings yet. Scan a page to learn it."); return; }
+  let t = `≈ ${fmt(e.sec)}/page (${e.n ? `average of last ${e.n}` : "typical for this scanner"})` +
+          ` · 5 more pages: ${fmt(5 * e.sec)} · 10 more: ${fmt(10 * e.sec)}`;
+  if ($("hurry").checked) {
+    const slow = estimate(setKey("300", $("mode").value));
+    if (slow && slow.sec - e.sec > 5) t += ` · Hurry saves ≈ ${fmt(slow.sec - e.sec)}/page vs 300 dpi`;
+  }
+  box.append(t);
+}
+let scanTimer = null, scanPhase = "preparing", phaseT0 = 0;
+const PHASE_TEXT = {
+  preparing: "Starting the scan…",
+  freeing: "Closing apps that slow the scan down (e.g. Synology client)… (not counted in the estimate)",
+  searching: "Waiting for the scanner search to finish… (not counted in the estimate)",
+  opening: "Opening Epson Scan 2… (not counted in the estimate)",
+  waiting: "Waiting for the scanner to be ready after the last page… (not counted in the estimate)",
+};
+// The countdown only runs while the scanner is really scanning; opening Epson Scan 2 and waiting for the
+// scanner head to reset after the previous page are shown, but not counted.
+function setPhase(phase) {
+  if (phase === scanPhase) return;
+  scanPhase = phase;
+  if (phase === "scanning") phaseT0 = Date.now();
+}
+function startCountdown(est) {
+  scanPhase = "preparing";
+  const tick = () => {
+    let msg;
+    if (scanPhase === "scanning") {
+      const el = (Date.now() - phaseT0) / 1000;
+      msg = est ? (el < est.sec ? `about ${fmt(est.sec - el)} left` : "taking longer than usual…") : `${fmt(el)} elapsed`;
+      say(`Scanning… place the page on the glass. ${msg}`);
+    } else {
+      msg = PHASE_TEXT[scanPhase] || PHASE_TEXT.preparing;
+      say(msg);
+    }
+    const p = $("scanprog"); if (p) p.textContent = scanPhase === "scanning" ? msg : msg.replace(/ \(not counted.*/, "");
+  };
+  tick(); scanTimer = setInterval(tick, 500);
+}
+function stopCountdown() { clearInterval(scanTimer); scanTimer = null; }
+
+// ---- hurry mode: 150 dpi (the sweet spot on this scanner) ----
+function applyHurry(restoreFromStorage) {
+  const store = (k, v) => { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} };
+  const get = k => { try { return localStorage.getItem(k); } catch { return null; } };
+  if ($("hurry").checked) {
+    if (!get("dpiBeforeHurry")) store("dpiBeforeHurry", $("dpi").value);
+    $("dpi").value = "150"; $("dpi").disabled = true;
+  } else {
+    const prev = get("dpiBeforeHurry");
+    if (prev) $("dpi").value = prev;
+    store("dpiBeforeHurry", null); $("dpi").disabled = false;
+  }
+  store("hurry", $("hurry").checked ? "1" : "0");
+  renderEta();
+}
+try { $("hurry").checked = localStorage.getItem("hurry") === "1"; } catch {}
+$("hurry").onchange = applyHurry;
+$("dpi").onchange = $("mode").onchange = renderEta;
+
+// The server pushes scan progress over a WebSocket (fast path). The scan is also a background job that is polled
+// as a fallback, quickly while the socket is down and slowly while it is up, so a dropped socket or a missed
+// message cannot lose a scan.
+let ws = null, wsOpen = false;
+const scanWaiters = new Map();   // job id -> handler for its progress messages
+function connectWS() {
+  try { ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`); }
+  catch { setTimeout(connectWS, 5000); return; }
+  ws.onopen = () => { wsOpen = true; loadDevices(); };   // catch up on a search that finished before the socket was open
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === "scan" && scanWaiters.has(m.job)) scanWaiters.get(m.job)(m);
+    else if (m.type === "devices") applyDevices(m);
+  };
+  ws.onclose = () => { wsOpen = false; setTimeout(connectWS, 2000); };
+  ws.onerror = () => ws.close();
+}
+function waitForScan(job) {
+  return new Promise((resolve, reject) => {
+    let failures = 0, timer;
+    const finish = fn => v => { clearTimeout(timer); scanWaiters.delete(job); fn(v); };
+    const handle = info => {
+      if (info.phase) setPhase(info.phase);
+      if (info.state === "done") finish(resolve)(info);
+      else if (info.state === "error") finish(reject)(new Error(info.error));
+    };
+    scanWaiters.set(job, handle);
+    const poll = async () => {
+      try { handle(await api("GET", "/scan/" + job)); failures = 0; }
+      catch (e) { if (e.message.startsWith("HTTP") || ++failures > 20) return finish(reject)(e); }  // network blip: keep polling
+      if (scanWaiters.has(job)) timer = setTimeout(poll, wsOpen ? 5000 : 1500);
+    };
+    poll();
+  });
+}
+
+async function scan() {
+  const d = doc() || newDoc();
+  const key = setKey(), est = estimate();
+  hideNext(); scanningId = d.id; $("scan").disabled = true; render();
+  startCountdown(est);
+  try {
+    const start = await api("POST", "/scan", { dpi: $("dpi").value, mode: $("mode").value, device: $("device").value });
+    const body = await waitForScan(start.job);
+    snap();
+    const target = docs.find(x => x.id === d.id) || doc() || newDoc();  // the doc may have been closed/undone meanwhile
+    target.pages.push(body.id); target.selPage = body.id;
+    known.add(body.id);  // only after it is in a document, or purge() would delete it
+    if (body.seconds && !body.cold && (body.engine || "wia") === engine) recordTime(key, body.seconds);   // warm-up scans would skew the average
+    say(`Page ${target.pages.length} added${body.seconds ? ` (scan took ${fmt(body.seconds)}${body.cold ? (body.engine === "epson" ? "; includes opening Epson Scan 2, not counted in the average" : "; first scan after a pause is slower, not counted in the average") : ""})` : ""}.${body.note ? " " + body.note : ""}`, !!body.note);
+    if ($("continuous").checked) showNext(target);
+  } catch (e) { say("Scan failed: " + e.message, true); }
+  finally { stopCountdown(); scanningId = null; $("scan").disabled = false; render(); }
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { location.href = "/login"; throw new Error("login required"); }   // session expired or not signed in
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+const enc = p => p.split("/").map(encodeURIComponent).join("/");
+const parentOf = p => p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+const baseName = p => p.slice(p.lastIndexOf("/") + 1);
+function triggerDownload(href, filename) {
+  const a = document.createElement("a"); a.href = href; if (filename) a.download = filename;
+  document.body.append(a); a.click(); a.remove();
+}
+
+// Generic form dialog: resolves to {field: value} or null when cancelled.
+function dialog({ title, fields, ok = "OK" }) {
+  return new Promise(resolve => {
+    const wrap = document.createElement("div");
+    wrap.className = "fixed inset-0 z-20 flex items-center justify-center bg-black/50";
+    const form = document.createElement("form");
+    form.className = "w-[min(92vw,380px)] rounded bg-white p-4 shadow-xl";
+    const h = document.createElement("h2"); h.className = "mb-3 text-base font-semibold"; h.textContent = title;
+    form.append(h);
+    const inputs = {};
+    for (const f of fields) {
+      const lab = document.createElement("label"); lab.className = "mb-3 block";
+      const t = document.createElement("div"); t.className = "mb-1 text-xs text-neutral-600"; t.textContent = f.label;
+      let inp;
+      if (f.options) { inp = document.createElement("select"); for (const [v, l] of f.options) inp.append(new Option(l, v)); }
+      else inp = document.createElement("input");
+      inp.className = "field w-full"; inp.value = f.value ?? ""; inputs[f.name] = inp;
+      lab.append(t, inp); form.append(lab);
+    }
+    const row = document.createElement("div"); row.className = "mt-4 flex justify-end gap-2";
+    const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel";
+    cancel.className = "rounded border border-neutral-300 px-3 py-1 hover:bg-neutral-100";
+    const submit = document.createElement("button"); submit.type = "submit"; submit.textContent = ok;
+    submit.className = "rounded bg-accent px-3 py-1 font-semibold text-white hover:bg-accent-dark";
+    row.append(cancel, submit); form.append(row); wrap.append(form);
+    const close = v => { wrap.remove(); resolve(v); };
+    form.onsubmit = e => { e.preventDefault(); close(Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value]))); };
+    cancel.onclick = () => close(null);
+    wrap.onmousedown = e => { if (e.target === wrap) close(null); };
+    wrap.onkeydown = e => { if (e.key === "Escape") close(null); };
+    document.body.append(wrap);
+    const first = Object.values(inputs)[0]; first.focus(); if (first.select) first.select();
+  });
+}
+function folderOptions() {
+  return [["", "Saved scans (top level)"], ...lib.folders.map(f =>
+    [f, "  ".repeat(f.split("/").length) + baseName(f)])];
+}
+
+async function downloadDoc() {
+  const d = doc(); if (!d || !d.pages.length) return;
+  say("Building PDF…");
+  try {
+    const res = await fetch("/pdf", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: d.name, pages: d.pages }) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    const url = URL.createObjectURL(await res.blob());
+    triggerDownload(url, d.name.replace(/[\\/:*?"<>|]/g, "_") + ".pdf");
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    say(`Downloaded ${d.name}.pdf`);
+  } catch (e) { say("Download failed: " + e.message, true); }
+}
+
+async function saveTo(folder, name, openAfter) {
+  const d = doc(); if (!d || !d.pages.length) return;
+  say("Saving PDF…");
+  try {
+    const body = await api("POST", "/save", { name, folder, pages: d.pages });
+    say(`Saved ${body.path}`); selFile = body.path; curFolder = folder;
+    for (let p = folder; p; p = parentOf(p)) expanded.add(p);
+    expanded.add(""); await loadFiles();
+    if (openAfter) window.open("/files/" + enc(body.path), "_blank");
+  } catch (e) { say("Save failed: " + e.message, true); }
+}
+async function openInWorkspace(path) {
+  say(`Opening ${baseName(path)}…`);
+  try {
+    const r = await api("POST", "/open", { path });
+    snap();
+    const d = newDoc(); d.name = r.name; d.pages = r.pages; d.selPage = null;
+    r.pages.forEach(p => known.add(p));  // after they are in a document, or purge() would delete them
+    say(`Opened ${r.pages.length} page${r.pages.length === 1 ? "" : "s"}. Saving creates a new file; the original is not changed.`);
+    render();
+  } catch (e) { say("Open failed: " + e.message, true); }
+}
+
+// ---- continuous scan: after each page, offer "Scan next page" ----
+function showNext(d) {
+  $("nexttext").textContent = `Page ${d.pages.length} added to “${d.name}”. Place the next page on the glass.`;
+  $("nextbar").classList.replace("hidden", "flex"); $("nextscan").focus();
+}
+function hideNext() { $("nextbar").classList.replace("flex", "hidden"); }
+$("nextscan").onclick = scan;
+$("nextdone").onclick = hideNext;
+try { $("continuous").checked = localStorage.getItem("continuous") === "1"; } catch {}
+$("continuous").onchange = () => {
+  try { localStorage.setItem("continuous", $("continuous").checked ? "1" : "0"); } catch {}
+  if (!$("continuous").checked) hideNext();
+};
+
+async function saveAs() {
+  const d = doc(); if (!d || !d.pages.length) return;
+  const r = await dialog({ title: "Save as PDF", ok: "Save", fields: [
+    { name: "name", label: "File name", value: d.name },
+    { name: "folder", label: "Folder", value: curFolder, options: folderOptions() }] });
+  if (r && r.name.trim()) saveTo(r.folder, r.name.trim(), false);
+}
+const save = openAfter => saveTo(curFolder, doc().name, openAfter);
+
+// ---- saved-scans library (folders inside the server's save folder only) ----
+let lib = { dir: "", folders: [], files: [] };
+let curFolder = "", sortBy = "name", query = "";
+const expanded = new Set([""]);
+
+const fmtSize = b => b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB";
+function act(icon, tip, fn) {
+  const b = document.createElement("button"); b.className = "tb2 !h-6 !w-6 !text-xs"; b.title = tip;
+  b.innerHTML = `<i class="fa-solid ${icon}"></i>`; b.onclick = e => { e.stopPropagation(); fn(); }; return b;
+}
+function actions(...btns) {
+  const box = document.createElement("span"); box.className = "ml-auto hidden shrink-0 gap-0.5 group-hover:flex"; box.append(...btns); return box;
+}
+async function libCall(fn, okMsg) {
+  try { await fn(); if (okMsg) say(okMsg); await loadFiles(); } catch (e) { say(e.message, true); }
+}
+
+async function newFolder(parent) {
+  const r = await dialog({ title: "New folder", ok: "Create", fields: [{ name: "name", label: "Folder name" }] });
+  if (!r || !r.name.trim()) return;
+  libCall(async () => {
+    const b = await api("POST", "/folder", { parent, name: r.name.trim() });
+    expanded.add(parent); expanded.add(b.path); curFolder = b.path;
+  });
+}
+async function renameItem(path, isFolder) {
+  const cur = baseName(path).replace(/\.pdf$/i, "");
+  const r = await dialog({ title: isFolder ? "Rename folder" : "Rename file", ok: "Rename",
+    fields: [{ name: "name", label: "New name", value: isFolder ? baseName(path) : cur }] });
+  if (!r || !r.name.trim()) return;
+  libCall(async () => {
+    const b = await api("POST", "/rename", { path, name: r.name.trim() });
+    if (selFile === path) selFile = b.path;
+    if (curFolder === path) curFolder = b.path;
+    expanded.delete(path); expanded.add(b.path);
+  });
+}
+async function moveItem(path) {
+  const r = await dialog({ title: `Move “${baseName(path)}”`, ok: "Move", fields: [
+    { name: "folder", label: "To folder", value: parentOf(path), options: folderOptions() }] });
+  if (!r || r.folder === parentOf(path)) return;
+  libCall(async () => { const b = await api("POST", "/move", { path, folder: r.folder }); if (selFile === path) selFile = b.path; }, "Moved.");
+}
+function deleteItem(path, isFolder) {
+  if (!confirm(`Delete ${isFolder ? "folder" : "file"} “${baseName(path)}”? This cannot be undone.`)) return;
+  libCall(async () => {
+    await api("DELETE", "/files/" + enc(path));
+    if (curFolder === path) curFolder = parentOf(path);
+  }, "Deleted.");
+}
+const openFile = p => window.open("/files/" + enc(p), "_blank");
+const downloadFile = p => triggerDownload("/files/" + enc(p) + "?download");
+
+function renderLibrary() {
+  $("path").textContent = lib.dir;
+  const box = $("files"); box.innerHTML = "";
+  const q = query.trim().toLowerCase();
+  const cmp = (a, b) => sortBy === "date" ? b.mtime - a.mtime
+    : baseName(a.path).toLowerCase().localeCompare(baseName(b.path).toLowerCase());
+  const pad = depth => `padding-left:${6 + depth * 16}px`;
+
+  const fileRow = (f, depth, showPath) => {
+    const row = document.createElement("div");
+    row.className = "group flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-1.5 " +
+      (f.path === selFile ? "bg-sel" : "hover:bg-sky-50");
+    row.style.cssText = pad(depth); row.title = f.path + "\n" + fmtSize(f.size) + " · " + new Date(f.mtime * 1000).toLocaleString();
+    row.innerHTML = '<i class="fa-solid fa-file-pdf w-4 text-center text-red-600"></i>';
+    const name = document.createElement("span"); name.className = "truncate"; name.textContent = baseName(f.path);
+    row.append(name);
+    if (showPath && parentOf(f.path)) {
+      const loc = document.createElement("span"); loc.className = "truncate text-xs text-neutral-400"; loc.textContent = parentOf(f.path); row.append(loc);
+    }
+    const size = document.createElement("span"); size.className = "ml-auto shrink-0 text-xs text-neutral-400 group-hover:hidden"; size.textContent = fmtSize(f.size);
+    row.append(size, actions(
+      act("fa-file-import", "Open in workspace to edit (saves as a new file)", () => openInWorkspace(f.path)),
+      act("fa-eye", "Open", () => openFile(f.path)), act("fa-download", "Download", () => downloadFile(f.path)),
+      act("fa-pen", "Rename", () => renameItem(f.path, false)), act("fa-folder-tree", "Move to folder…", () => moveItem(f.path)),
+      act("fa-trash", "Delete", () => deleteItem(f.path, false))));
+    row.onclick = () => { selFile = f.path; renderLibrary(); };
+    row.ondblclick = () => openFile(f.path);
+    return row;
+  };
+  const folderRow = (path, depth) => {
+    const open = expanded.has(path), root = path === "";
+    const row = document.createElement("div");
+    row.className = "group flex cursor-pointer items-center gap-1.5 whitespace-nowrap py-0.5 pr-1.5 " +
+      (path === curFolder ? "bg-sel" : "hover:bg-sky-50");
+    row.style.cssText = pad(depth);
+    row.innerHTML = `<i class="fa-solid ${open ? "fa-chevron-down" : "fa-chevron-right"} w-3 text-[10px] text-neutral-500"></i>` +
+      `<i class="fa-solid ${open ? "fa-folder-open" : "fa-folder"} w-4 text-center text-amber-500"></i>`;
+    const name = document.createElement("span"); name.className = "truncate font-medium";
+    name.textContent = root ? "Saved scans" : baseName(path); row.append(name);
+    row.append(actions(act("fa-folder-plus", "New subfolder", () => newFolder(path)),
+      ...(root ? [] : [act("fa-pen", "Rename", () => renameItem(path, true)), act("fa-trash", "Delete (must be empty)", () => deleteItem(path, true))])));
+    row.onclick = () => { curFolder = path; if (open && !root) expanded.delete(path); else expanded.add(path); renderLibrary(); };
+    return row;
+  };
+
+  if (q) {
+    const hits = lib.files.filter(f => f.path.toLowerCase().includes(q)).sort(cmp);
+    if (!hits.length) box.innerHTML = '<div class="px-2.5 py-2 text-neutral-500">No matches.</div>';
+    hits.forEach(f => box.append(fileRow(f, 0, true)));
+    return;
+  }
+  const walk = (parent, depth) => {
+    if (!expanded.has(parent)) return;
+    for (const f of lib.folders.filter(f => parentOf(f) === parent)) { box.append(folderRow(f, depth)); walk(f, depth + 1); }
+    for (const f of lib.files.filter(f => parentOf(f.path) === parent).sort(cmp)) box.append(fileRow(f, depth));
+  };
+  box.append(folderRow("", 0)); walk("", 1);
+  if (!lib.folders.length && !lib.files.length) {
+    const e = document.createElement("div"); e.className = "px-3 py-2 text-neutral-500"; e.textContent = "No saved scans yet."; box.append(e);
+  }
+}
+async function loadFiles() {
+  try { lib = await api("GET", "/files"); } catch (e) { say("Could not load saved scans: " + e.message, true); return; }
+  if (!lib.folders.includes(curFolder)) curFolder = "";
+  renderLibrary();
+}
+
+function movePage(delta) {
+  const d = doc(); if (!d || !d.selPage) return;
+  const i = d.pages.indexOf(d.selPage), j = i + delta;
+  if (j < 0 || j >= d.pages.length) return;
+  snap();
+  [d.pages[i], d.pages[j]] = [d.pages[j], d.pages[i]]; render();
+}
+
+function deleteSel() {
+  const d = doc(); if (!d) return;
+  if (d.selPage) {
+    snap();
+    d.pages = d.pages.filter(p => p !== d.selPage); d.selPage = null;
+    say("Page deleted. Press Ctrl+Z to undo."); render();
+  } else closeDoc(d);
+}
+
+function preview(pid) { $("big").src = "/page/" + pid; $("modal").classList.replace("hidden", "flex"); }
+$("modal").onclick = () => $("modal").classList.replace("flex", "hidden");
+
+// The server pushes the device list over the WebSocket; while a search runs the page also polls as a fallback.
+let devPoll = null;
+function applyDevices(st) {
+  clearTimeout(devPoll);
+  const sel = $("device"), prev = sel.value || (() => { try { return localStorage.getItem("device") || ""; } catch { return ""; } })();
+  engine = st.engine || "wia"; renderEta();
+  sel.innerHTML = "";
+  if (!st.devices.length) sel.append(new Option(st.refreshing ? "Looking for scanners…" : "No scanner found", ""));
+  for (const name of st.devices) sel.append(new Option(name, name));
+  if (st.devices.includes(prev)) sel.value = prev;
+  $("refresh").firstChild.classList.toggle("fa-spin", st.refreshing);
+  if (st.skipped) say("Not refreshing: " + st.skipped, true);
+  else if (st.refreshing) {
+    if (!st.devices.length) say("Looking for scanners… this can take 20 seconds or more.");
+    devPoll = setTimeout(loadDevices, wsOpen ? 5000 : 1500);
+  } else if (st.error) say("Could not list scanners: " + st.error, true);
+  else if (!st.devices.length) say("No scanners found. Check the driver setting and that the scanner is on.", true);
+}
+async function loadDevices(force) {
+  clearTimeout(devPoll);
+  try { applyDevices(await api("GET", "/devices" + (force === true ? "?refresh=1" : ""))); }
+  catch (e) { say("Could not reach the server: " + e.message + " (retrying…)", true); devPoll = setTimeout(loadDevices, 3000); }
+}
+$("device").onchange = () => { try { localStorage.setItem("device", $("device").value); } catch {} };
+$("refresh").onclick = () => loadDevices(true);
+
+$("scan").onclick = scan;
+$("newdoc").onclick = newDoc;
+$("download").onclick = downloadDoc;
+$("save").onclick = saveAs;
+$("newfolder").onclick = () => newFolder(curFolder);
+$("reload").onclick = loadFiles;
+$("search").oninput = e => { query = e.target.value; renderLibrary(); };
+$("sort").onclick = () => {
+  sortBy = sortBy === "name" ? "date" : "name";
+  $("sort").title = sortBy === "name" ? "Sorted by name (click for newest first)" : "Sorted by newest (click for name)";
+  $("sort").innerHTML = `<i class="fa-solid ${sortBy === "name" ? "fa-arrow-down-a-z" : "fa-clock"}"></i>`;
+  renderLibrary();
+};
+$("print").onclick = () => save(true);
+$("del").onclick = deleteSel;
+$("pgleft").onclick = () => movePage(-1);
+$("pgright").onclick = () => movePage(1);
+$("combine").onclick = combineAll;
+$("view").onclick = () => { const d = doc(); if (d && d.selPage) preview(d.selPage); };
+document.addEventListener("keydown", e => {
+  const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
+  if (e.key === "Delete" && !typing) deleteSel();
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey && !typing) { e.preventDefault(); undo(); }
+  if (e.key === "Escape") closeMenus();
+});
+$("undo").onclick = undo;
+
+// ---- menu bar ----
+const canSave = () => { const d = doc(); return !!d && d.pages.length > 0; };
+let authOn = false;   // the server requires a login (set from /me)
+async function logout() {
+  await api("POST", "/logout");
+  location.href = "/login";
+}
+const MENUS = {
+  File: [
+    ["New document", newDoc],
+    ["Save as…", saveAs, canSave],
+    ["Download PDF", downloadDoc, canSave],
+    ["Save & open PDF", () => save(true), canSave],
+    ["Open selected saved PDF in workspace", () => openInWorkspace(selFile), () => !!selFile],
+    ["Close document", () => closeDoc(doc()), () => !!doc()],
+    ["Log out", logout, null, "", () => authOn],
+  ],
+  Edit: [
+    ["Undo", undo, () => undoStack.length > 0, "Ctrl+Z"],
+    ["Delete selected", deleteSel, () => !!doc(), "Del"],
+    ["Combine all documents", combineAll, () => docs.filter(x => x.pages.length).length > 1],
+  ],
+  View: [
+    ["Refresh scanner list", () => loadDevices(true)],
+    ["Refresh saved scans", loadFiles],
+    ["Reset scan time estimates", resetEstimates],
+  ],
+  Help: [
+    ["Project on GitHub", () => window.open("https://github.com/PolyLvst", "_blank", "noopener")],
+  ],
+};
+const tops = () => [...$("menus").children];
+function closeMenus() {
+  tops().forEach(w => { w.lastChild.classList.add("hidden"); w.firstChild.setAttribute("aria-expanded", "false"); });
+  menuOpen = false;
+}
+let menuOpen = false;
+function showMenu(wrap) {
+  closeMenus(); menuOpen = true;
+  const list = wrap.lastChild; list.innerHTML = "";
+  for (const [label, fn, enabled, hint, visible] of MENUS[wrap.dataset.label]) {
+    if (visible && !visible()) continue;   // e.g. "Log out" only exists when the server asks for a login
+    const it = document.createElement("button");
+    it.className = "flex w-full items-center justify-between gap-6 px-3 py-1 text-left hover:enabled:bg-sky-100 disabled:opacity-40";
+    it.disabled = enabled ? !enabled() : false;
+    it.innerHTML = "<span></span><span class='text-xs text-neutral-400'></span>";
+    it.firstChild.textContent = label; it.lastChild.textContent = hint || "";
+    it.onclick = e => { e.stopPropagation(); closeMenus(); fn(); };
+    list.append(it);
+  }
+  list.classList.remove("hidden"); wrap.firstChild.setAttribute("aria-expanded", "true");
+}
+for (const label of Object.keys(MENUS)) {
+  const wrap = document.createElement("div"); wrap.className = "relative"; wrap.dataset.label = label;
+  const b = document.createElement("button"); b.textContent = label; b.setAttribute("aria-expanded", "false");
+  b.className = "rounded px-2 py-0.5 hover:bg-sky-100 aria-expanded:bg-sky-100";
+  const list = document.createElement("div");
+  list.className = "absolute left-0 top-full z-30 hidden min-w-[230px] border border-neutral-300 bg-white py-1 shadow-lg";
+  b.onclick = e => { e.stopPropagation(); menuOpen && !list.classList.contains("hidden") ? closeMenus() : showMenu(wrap); };
+  wrap.onmouseenter = () => { if (menuOpen) showMenu(wrap); };
+  wrap.append(b, list); $("menus").append(wrap);
+}
+document.addEventListener("click", closeMenus);
+
+if ($("hurry").checked) { $("dpi").value = "150"; $("dpi").disabled = true; }
+renderEta();
+api("GET", "/me").then(me => { authOn = me.auth; if (me.auth) say(`Signed in as ${me.user}.`); });
+connectWS();
+restoreWorkspace().then(ok => { if (!ok) newDoc(); }); loadFiles(); loadDevices();
+</script>
+</body>
+</html>
