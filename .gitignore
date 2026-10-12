@@ -3,3 +3,4 @@ scans/
 server.log
 __pycache__/
 ref/
+config.windows.json
