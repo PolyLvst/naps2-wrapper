@@ -16,6 +16,7 @@ import time
 IDLE_CLOSE = 120  # seconds without a scan before the window is closed again
 READY_TIMEOUT = 45  # how long to keep re-clicking Scan while the scanner is still busy after the previous page
 LAUNCH_TIMEOUT = 40
+EXPLORER_WATCH = 20  # seconds after a scan during which a File Explorer window that Epson opened is closed again
 MODES = {"color": "Color", "gray": "Grayscale", "bw": "Black & White"}
 EXE_CANDIDATES = [
     r"C:\Program Files (x86)\epson\Epson Scan 2\Core\es2launcher.exe",
@@ -268,11 +269,34 @@ class Session:
                 w.select(combos[label], value)
                 time.sleep(0.3)
         seen = set(glob.glob(os.path.join(folder, "*")))
+        explorers = self._explorer_windows()
         started = self._click_until_accepted(button, progress)
         wait = min(timeout, 50 if int(dpi) <= 300 else timeout)  # 300 dpi colour takes ~35 s
         if self._wait_for_file(folder, seen, started + wait, out_path):
+            threading.Thread(target=self._close_new_explorers, args=(explorers, os.path.basename(documents_folder())),
+                             daemon=True).start()
             return round(time.monotonic() - started, 1)
         raise EpsonError("Epson Scan 2 did not produce a scan (the scanner may be busy)")
+
+    def _explorer_windows(self):
+        w = self._w()
+        return {h for h in w.tops() if w.u.IsWindowVisible(h) and w.cls(h) == "CabinetWClass"}
+
+    def _close_new_explorers(self, before, title):
+        """Epson Scan 2 has no setting to stop it opening the destination folder in File Explorer after each scan.
+        Close the window it opened (a new Explorer window titled like the folder). A window that was already open
+        is reused by Explorer, so one the user opened themselves is never closed."""
+        try:
+            w, before = self._w(), set(before)
+            deadline = time.monotonic() + EXPLORER_WATCH
+            while time.monotonic() < deadline:
+                for h in self._explorer_windows() - before:
+                    if w.text(h) == title:  # a new window is first titled "File Explorer": keep checking until it names the folder
+                        w.close(h)
+                        before.add(h)
+                time.sleep(0.3)
+        except Exception:
+            pass  # cosmetic: never let this affect a scan
 
     def _scan_started(self, main):
         """Epson greys out its window and shows a 'Progress' box as soon as it accepts a click on Scan."""

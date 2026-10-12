@@ -33,6 +33,7 @@ JPEG in the dropdowns, clicks **Scan**, and collects the file it saves. To turn 
 - After each page the scanner is busy for about 10 s (head returning); the server keeps re-clicking until Epson accepts the click.
 - Epson Scan 2 saves into your Documents folder and the server moves each file away immediately.
 - It changes Epson Scan 2's last-used settings (image type, resolution, format).
+- Epson Scan 2 opens the Documents folder in File Explorer after every scan and has no setting to turn that off. The server closes the window it opened (only a *new* Explorer window with that folder's name, within 20 s of the scan), so an Explorer window you opened yourself is left alone.
 - If Epson Scan 2 fails, the page is scanned with NAPS2/WIA instead and a note says so.
 - Never kill `es2utility.exe` / `es2launcher.exe` by force: that left the scanner unreachable until it was power-cycled.
 - Tested with Epson Scan 2 on Windows 10 and an L3110; other versions may label controls differently.
