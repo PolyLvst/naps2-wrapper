@@ -6,14 +6,12 @@
   are built: Get-Printer-Attributes (what the printer supports) and Print-Job (send a PDF with settings).
 """
 import http.client
-import json
 import os
 import re
 import shlex
 import ssl
 import struct
 import subprocess
-import tempfile
 import threading
 import time
 import zlib
@@ -239,18 +237,36 @@ CMD_OPTIONS = {"name": "test printer (PRINT_CMD)", "copies_max": 99, "color": Tr
 SUMATRA_PLACES = [r"%LOCALAPPDATA%\SumatraPDF\SumatraPDF.exe", r"%USERPROFILE%\SumatraPDF\SumatraPDF.exe",
                   r"%ProgramFiles%\SumatraPDF\SumatraPDF.exe"]
 SUMATRA_EXIT = {1: "SumatraPDF could not print the file"}
-# asks Windows (through .NET) whether the printer exists and which paper sizes and colour it has
-PRINTER_INFO_PS = r"""
-param([string]$Name)
-[Console]::OutputEncoding = [Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Drawing
-$ps = New-Object System.Drawing.Printing.PrinterSettings
-if ($Name) { $ps.PrinterName = $Name }
-if (-not $ps.IsValid) { @{ valid = $false; name = $ps.PrinterName } | ConvertTo-Json -Compress; exit 0 }
-$papers = @($ps.PaperSizes | ForEach-Object { $_.RawKind })
-@{ valid = $true; name = $ps.PrinterName; color = $ps.SupportsColor; papers = $papers;
-   default = $ps.DefaultPageSettings.PaperSize.RawKind } | ConvertTo-Json -Compress
-"""
+def windows_printer_info(name):
+    """{'valid', 'name', 'color', 'papers'} straight from the Windows print spooler (winspool), in well under a
+    second; asking through PowerShell/.NET took over 10 s on the scanner PC. name "" = the default printer."""
+    import ctypes
+    from ctypes import wintypes
+    ws = ctypes.WinDLL("winspool.drv")
+    ws.GetDefaultPrinterW.argtypes = [wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    ws.OpenPrinterW.argtypes = [wintypes.LPWSTR, ctypes.POINTER(wintypes.HANDLE), ctypes.c_void_p]
+    ws.ClosePrinter.argtypes = [wintypes.HANDLE]
+    caps = ws.DeviceCapabilitiesW
+    caps.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.WORD, ctypes.c_void_p, ctypes.c_void_p]
+    caps.restype = ctypes.c_int
+    if not name:
+        n = wintypes.DWORD(0)
+        ws.GetDefaultPrinterW(None, ctypes.byref(n))
+        buf = ctypes.create_unicode_buffer(n.value or 1)
+        if not ws.GetDefaultPrinterW(buf, ctypes.byref(n)):
+            return {"valid": False, "name": ""}
+        name = buf.value
+    handle = wintypes.HANDLE()
+    if not ws.OpenPrinterW(name, ctypes.byref(handle), None):
+        return {"valid": False, "name": name}
+    ws.ClosePrinter(handle)
+    DC_PAPERS, DC_COLORDEVICE = 2, 32
+    n = caps(name, None, DC_PAPERS, None, None)
+    papers = (wintypes.WORD * max(n, 0))()
+    if n > 0:
+        caps(name, None, DC_PAPERS, papers, None)
+    return {"valid": True, "name": name, "color": caps(name, None, DC_COLORDEVICE, None, None) == 1,
+            "papers": list(papers)}
 
 
 def find_sumatra(configured=""):
@@ -266,21 +282,10 @@ class SumatraPrinter:
         self.exe, self.printer_name, self.timeout = exe, printer_name, timeout
 
     def info(self):
-        """{'valid', 'name', 'color', 'papers', 'default'} for the configured (or default) printer."""
-        with tempfile.TemporaryDirectory(prefix="printer-") as tmp:
-            script = Path(tmp) / "info.ps1"
-            script.write_text(PRINTER_INFO_PS, encoding="utf-8-sig")
-            try:
-                proc = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                                       "-File", str(script), "-Name", self.printer_name],
-                                      capture_output=True, timeout=60,
-                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            except (OSError, subprocess.TimeoutExpired) as e:
-                raise PrintError(f"cannot ask Windows about the printer ({e})")
         try:
-            info = json.loads(proc.stdout.decode("utf-8-sig", "replace").strip() or "{}")
-        except ValueError:
-            info = {}
+            info = windows_printer_info(self.printer_name)
+        except (OSError, AttributeError) as e:  # AttributeError: no ctypes.WinDLL (not Windows)
+            raise PrintError(f"cannot ask Windows about the printer ({e})")
         if not info.get("valid"):
             who = f'"{self.printer_name}"' if self.printer_name else "the default printer"
             raise PrintError(f"Windows has no printer {who} (PRINT_PRINTER in config.json)")
@@ -290,7 +295,7 @@ class SumatraPrinter:
         info = self.info()
         papers = {f"paper:{p}" for p in info.get("papers") or []}
         media = [m for m in MEDIA_LABELS if m in papers][:4]
-        default = f"paper:{info.get('default')}"
+        default = f"paper:{info.get('default')}"  # not reported by winspool; A4 is preferred anyway
         return {"name": info["name"], "copies_max": 999, "color": bool(info.get("color")), "page_ranges": True,
                 "media": media, "media_default": next((m for m in media if m in A4), default if default in media else None),
                 "orientation": True, "quality": [], "scaling": ["fit", "none"], "images": True}

@@ -3,8 +3,10 @@
 It long-polls the Bot API (outbound HTTPS only, no open port). Coworkers register once with TELEGRAM_PASSWORD;
 registrations are kept in telegram_users.json. The server module is passed in by server.py (see start()).
 """
+import contextlib
 import hashlib
 import hmac
+import http.client
 import json
 import mimetypes
 import os
@@ -17,8 +19,6 @@ import tempfile
 import threading
 import time
 import traceback
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -77,6 +77,7 @@ class Api:
     def __init__(self, base, token):
         self.base, self.token = base.rstrip("/"), token
         self.ctx, self.ctx_lock, self.refreshed = ssl.create_default_context(), threading.Lock(), 0.0
+        self.pool, self.pool_lock = [], threading.Lock()  # idle kept-open connections: (connection, idle since)
 
     def refresh_trust(self):
         """After a certificate error: let Windows check the server once, which makes it download a root certificate
@@ -96,51 +97,101 @@ class Api:
                 except (OSError, subprocess.TimeoutExpired):
                     pass
             self.ctx = ssl.create_default_context()
+            with self.pool_lock:
+                for conn, _ in self.pool:
+                    conn.close()
+                self.pool.clear()
             log("certificate check failed; asked Windows to update its root certificates and reloaded them")
             return True
 
-    def open(self, req, timeout):
+    # Telegram is ~0.2 s away from the scanner PC, but a new HTTPS connection costs ~0.4 s more, so connections are
+    # kept open and reused (a tap on a button makes two or three calls).
+    def _connect(self, timeout):
+        u = urlparse(self.base)
+        if u.scheme == "https":
+            return http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=self.ctx)
+        return http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+
+    def _take(self, timeout):
+        with self.pool_lock:
+            while self.pool:
+                conn, idle_since = self.pool.pop()
+                if time.monotonic() - idle_since < 30:  # older ones may have been closed by the server
+                    conn.timeout = timeout
+                    if conn.sock:
+                        conn.sock.settimeout(timeout)
+                    return conn, True
+                conn.close()
+        return self._connect(timeout), False
+
+    def _give(self, conn):
+        with self.pool_lock:
+            self.pool.append((conn, time.monotonic()))
+
+    @contextlib.contextmanager
+    def response(self, path, body=None, headers=None, timeout=30):
+        """Send a request and yield the response; the connection goes back to the pool if it is still usable."""
+        conn, reused = self._take(timeout)
+        resp, retried_trust = None, False
+        while resp is None:
+            try:
+                conn.request("GET" if body is None else "POST", path, body, headers or {})
+                resp = conn.getresponse()
+            except ssl.SSLCertVerificationError:
+                conn.close()
+                if retried_trust or not self.refresh_trust():
+                    raise
+                retried_trust, conn = True, self._connect(timeout)
+            except (OSError, http.client.HTTPException):
+                conn.close()
+                if not reused:
+                    raise
+                conn, reused = self._connect(timeout), False  # the kept connection had gone stale: once more
         try:
-            return urllib.request.urlopen(req, timeout=timeout, context=self.ctx)
-        except urllib.error.URLError as e:
-            if isinstance(e.reason, ssl.SSLCertVerificationError) and self.refresh_trust():
-                return urllib.request.urlopen(req, timeout=timeout, context=self.ctx)
+            yield resp
+        except BaseException:
+            conn.close()
             raise
+        if resp.isclosed() and not resp.will_close:
+            self._give(conn)
+        else:
+            conn.close()
 
     def call(self, method, params=None, files=None, timeout=30):
-        url = f"{self.base}/bot{self.token}/{method}"
         params = {k: v for k, v in (params or {}).items() if v is not None}
         if files:
-            body, ctype = multipart(params or {}, files)
+            body, ctype = multipart(params, files)
         else:
-            body, ctype = json.dumps(params or {}).encode(), "application/json"
-        req = urllib.request.Request(url, data=body, headers={"Content-Type": ctype})
+            body, ctype = json.dumps(params).encode(), "application/json"
+        prefix = urlparse(self.base).path.rstrip("/")
+        try:  # never put the path in an error message: it holds the token
+            with self.response(f"{prefix}/bot{self.token}/{method}", body, {"Content-Type": ctype}, timeout) as r:
+                raw, status = r.read(), r.status
+        except (OSError, http.client.HTTPException) as e:
+            raise TelegramError(f"cannot reach Telegram ({e or type(e).__name__})") from None
         try:
-            with self.open(req, timeout) as r:
-                data = json.load(r)
-        except urllib.error.HTTPError as e:
-            try:
-                data = json.load(e)
-            except ValueError:
-                raise TelegramError(f"Telegram answered HTTP {e.code}", e.code) from None
-        except (urllib.error.URLError, OSError, ValueError) as e:  # never include the URL: it holds the token
-            raise TelegramError(f"cannot reach Telegram ({getattr(e, 'reason', e)})") from None
+            data = json.loads(raw)
+        except ValueError:
+            raise TelegramError(f"Telegram answered HTTP {status}", status) from None
         if not data.get("ok"):
             raise TelegramError(data.get("description") or "Telegram error", data.get("error_code"))
         return data["result"]
 
     def download(self, file_path, dest, timeout=180):
-        url = f"{self.base}/file/bot{self.token}/{file_path}"
+        prefix = urlparse(self.base).path.rstrip("/")
         try:
-            with self.open(url, timeout) as r, open(dest, "wb") as f:
+            with self.response(f"{prefix}/file/bot{self.token}/{file_path}", timeout=timeout) as r, open(dest, "wb") as f:
+                if r.status != 200:
+                    r.read()
+                    raise TelegramError(f"downloading the file failed (HTTP {r.status})")
                 got = 0
                 while chunk := r.read(65536):
                     got += len(chunk)
                     if got > MAX_DOWNLOAD:
                         raise TelegramError("the file is larger than 20 MB")
                     f.write(chunk)
-        except (urllib.error.URLError, OSError) as e:
-            raise TelegramError(f"downloading the file failed ({getattr(e, 'reason', e)})") from None
+        except (OSError, http.client.HTTPException) as e:
+            raise TelegramError(f"downloading the file failed ({e or type(e).__name__})") from None
 
 
 def multipart(params, files):
@@ -157,6 +208,22 @@ def multipart(params, files):
                 f"Content-Type: {ctype}\r\n\r\n").encode() + data + b"\r\n"
     out += f"--{boundary}--\r\n".encode()
     return bytes(out), f"multipart/form-data; boundary={boundary}"
+
+
+def tap_note(data):
+    """The short note Telegram shows at the top of the chat right after a button is tapped (None = nothing)."""
+    parts = (data or "").split(":")
+    kind, action = parts[0], parts[-1]
+    if kind == "m" and len(parts) == 3 and parts[1] == "dpi":
+        return f"✓ {parts[2]} dpi"
+    if kind == "m" and len(parts) == 3 and parts[1] == "mode":
+        return f"✓ {MODE_TEXT.get(parts[2], parts[2]).capitalize()}"
+    notes = {("m", "status"): "⏳ Checking the scanner and printer…", ("m", "scan"): "📄 Starting the scan…",
+             ("s", "next"): "📄 Starting the scan…", ("s", "finish"): "⏳ Making the PDF…",
+             ("p", "go"): "🖨 Sending to the printer…", ("m", "cancel"): "Cancelling…", ("s", "cancel"): "Cancelling…"}
+    if kind == "r":
+        return "⏳ Opening the print settings…"
+    return notes.get((kind, action))
 
 
 def button(text, data):
@@ -318,6 +385,7 @@ class Bot:
             except TelegramError as e:
                 log(f"cannot start yet: {e}" + (" (check TELEGRAM_BOT_TOKEN)" if e.code == 401 else ""))
                 time.sleep(60 if e.code == 401 else 10)
+        threading.Thread(target=self.warm_printer, daemon=True).start()
         log(f"bot @{me.get('username')} is running ({len(self.users.users)} registered user(s), "
             f"{len(self.users.admins)} admin(s))")
         while True:
@@ -341,6 +409,14 @@ class Bot:
                 threading.Thread(target=self.dispatch, args=(u,), daemon=True).start()
             self.expire()
 
+    def warm_printer(self):
+        """Look the printer up once at start, so the first print settings message comes up quickly."""
+        try:
+            if self.srv.printer.configured():
+                self.srv.printer.options()
+        except printing.PrintError as e:
+            log(f"printer not ready: {e}")
+
     def dispatch(self, update):
         msg, cb = update.get("message"), update.get("callback_query")
         where = msg or (cb or {}).get("message")
@@ -350,17 +426,28 @@ class Bot:
             return
         chat_id = where["chat"]["id"]
         c = self.chat(chat_id)
-        if cb:
-            self.quiet("answerCallbackQuery", callback_query_id=cb["id"])  # stop the button's spinner at once
-        with c.lock:
-            try:
-                if cb:
-                    self.on_callback(c, chat_id, cb)
-                else:
-                    self.on_message(c, chat_id, msg)
-            except Exception as e:
-                traceback.print_exc()
-                self.quiet("sendMessage", chat_id=chat_id, text=f"Something went wrong: {e}")
+        # a quick tap right after another usually only waits a moment for it; a long scan or print means "busy"
+        free = c.lock.acquire(timeout=0.7)
+        if cb:  # answer at once: stops the button's spinner and says what is happening
+            note = tap_note(cb.get("data")) if free else "⏳ Still busy with your previous step, one moment…"
+            params = {"callback_query_id": cb["id"]}
+            if note:
+                params["text"] = note
+            self.quiet("answerCallbackQuery", **params)
+        elif msg.get("document") or msg.get("photo") or (msg.get("text") or "").split(" ")[0] in ("/scan", "/status"):
+            self.quiet("sendChatAction", chat_id=chat_id, action="typing")  # "typing…" while the file is fetched
+        if not free:
+            c.lock.acquire()
+        try:
+            if cb:
+                self.on_callback(c, chat_id, cb)
+            else:
+                self.on_message(c, chat_id, msg)
+        except Exception as e:
+            traceback.print_exc()
+            self.quiet("sendMessage", chat_id=chat_id, text=f"Something went wrong: {e}")
+        finally:
+            c.lock.release()
 
     def expire(self):
         now = time.monotonic()
@@ -487,7 +574,8 @@ class Bot:
                 + f"\n\nAdmins (config.json): {admins}")
 
     def cmd_status(self, chat_id):
-        self.send(chat_id, self.status_text(), keyboard([[button("☰ Menu", "m:menu")]]))
+        msg = self.send(chat_id, "ℹ️ Status\n\n⏳ Checking the scanner and printer…")
+        self.edit(chat_id, msg, self.status_text(), keyboard([[button("☰ Menu", "m:menu")]]))
 
     def status_text(self):
         srv = self.srv
@@ -581,6 +669,7 @@ You can also forward a file from another chat to me."""
                 c.scan_prefs[action] = arg
             self.edit(chat_id, msg_id, self.SETTINGS_TEXT, self.settings_keyboard(c))
         elif action == "status":
+            self.edit(chat_id, msg_id, "ℹ️ Status\n\n⏳ Checking the scanner and printer…")
             self.edit(chat_id, msg_id, self.status_text(),
                       keyboard([[button("🔄 Refresh", "m:status"), button("« Back", "m:back")]]))
         elif action == "help":
@@ -651,7 +740,7 @@ You can also forward a file from another chat to me."""
             msg = self.send(chat_id, text, self.scan_keyboard(s, failed=True))
             return self.move_buttons(chat_id, s, msg)
         self.move_buttons(chat_id, s, None)
-        status = self.send(chat_id, f"Page {n}: {PHASES['preparing']}")
+        status = self.send(chat_id, f"⏳ Page {n}: {PHASES['preparing']}")
         phase, deadline = "preparing", time.monotonic() + srv.CFG["TIMEOUT"] * 3 + 120
         while True:
             info = srv.scan_jobs.get(job) or {"state": "error", "error": "the scan was lost"}
@@ -662,7 +751,7 @@ You can also forward a file from another chat to me."""
                 break
             if info.get("phase") != phase:
                 phase = info.get("phase")
-                status = self.edit(chat_id, status, f"Page {n}: {PHASES.get(phase, 'Scanning…')}")
+                status = self.edit(chat_id, status, f"⏳ Page {n}: {PHASES.get(phase, 'Scanning…')}")
             time.sleep(1)
         s["last"] = time.monotonic()
         if info["state"] != "done":
@@ -704,7 +793,7 @@ You can also forward a file from another chat to me."""
             return
         self.move_buttons(chat_id, s, None)
         n = len(s["pages"])
-        status = self.send(chat_id, f"Making the PDF ({plural(n, 'page')})…")
+        status = self.send(chat_id, f"⏳ Making the PDF ({plural(n, 'page')})…")
         name = f"Scan {datetime.now():%Y-%m-%d %H-%M}.pdf"
         tmp = Path(tempfile.mkdtemp(prefix="tg-scan-"))
         try:
@@ -759,10 +848,11 @@ You can also forward a file from another chat to me."""
             return self.send(chat_id, "That scan is no longer kept for printing (after an hour, or the server restarted). "
                                       "Send me the PDF to print it.")
         r["created"] = time.monotonic()  # printing it again later keeps it a while longer
+        status = self.send(chat_id, f"⏳ Opening the print settings for {r['name']}…")
         tmp = Path(tempfile.mkdtemp(prefix="tg-print-"))
         pdf = tmp / "print.pdf"
         shutil.copyfile(r["pdf"], pdf)  # the dialog's job owns (and later deletes) its own copy
-        self.open_dialog(c, chat_id, r["name"], tmp, pdf, r["pages"])
+        self.open_dialog(c, chat_id, r["name"], tmp, pdf, r["pages"], status)
 
     def drop_scan(self, c, chat_id):
         s, c.scan = c.scan, None
@@ -792,7 +882,7 @@ You can also forward a file from another chat to me."""
         if (doc.get("file_size") or 0) > MAX_DOWNLOAD:
             return self.send(chat_id, f"{name} is {doc['file_size'] // 2**20} MB. Telegram only lets bots fetch files "
                                       "up to 20 MB; make it smaller (or split it) and send it again.")
-        status = self.send(chat_id, f"📥 Getting {name}…")
+        status = self.send(chat_id, f"⏳ Getting {name}…")
         tmp = Path(tempfile.mkdtemp(prefix="tg-print-"))
         try:
             src = tmp / f"source{ext}"  # the sender's file name is only shown, never used as a path
@@ -801,13 +891,13 @@ You can also forward a file from another chat to me."""
             options = srv.printer.options()
             pdf = src if kind == "pdf" or (kind == "image" and options["images"]) else tmp / "print.pdf"
             if kind == "image" and pdf != src:  # this printer only takes PDF
-                status = self.edit(chat_id, status, f"🖼 Preparing {name}…")
+                status = self.edit(chat_id, status, f"⏳ Preparing {name}…")
                 proc = srv.run_merge(pdf, [src])
                 if proc.returncode != 0 or not pdf.exists():
                     raise RuntimeError(f"could not read the picture ({(proc.stderr or proc.stdout or '').strip()[:200]})")
             elif kind == "office":
                 app = office_pdf.APP_NAMES[office_pdf.kind_of(name)]
-                status = self.edit(chat_id, status, f"📝 Opening {name} with {app}… (can take a minute)")
+                status = self.edit(chat_id, status, f"⏳ Opening {name} with {app}… (can take a minute)")
                 office_pdf.to_pdf(src, pdf, srv.CFG["TIMEOUT"], srv.CFG["OFFICE_CMD"])
             pages = 1 if pdf.suffix.lower() != ".pdf" else printing.pdf_page_count(pdf)
         except (TelegramError, office_pdf.OfficeError, printing.PrintError, RuntimeError, OSError,
@@ -920,7 +1010,7 @@ You can also forward a file from another chat to me."""
         if c.awaiting == ("range", tok):
             c.awaiting = None
         s, o = dict(job["settings"]), job["options"]
-        msg = self.edit(chat_id, job["msg"], self.dialog_text(job, "Sending to the printer…"))
+        msg = self.edit(chat_id, job["msg"], self.dialog_text(job, "⏳ Sending to the printer…"))
         try:
             pdf = job["pdf"]
             if s["pages"] and not o["page_ranges"]:  # the printer can't pick pages: cut them out here
