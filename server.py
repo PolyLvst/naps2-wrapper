@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import epson_scan
 import pause_apps
+import printing
 
 HERE = Path(__file__).resolve().parent
 
@@ -42,11 +43,23 @@ DEFAULTS = {
     "HOST": "0.0.0.0",
     "TIMEOUT": 120,
     "SAVE_DIR": str(HERE / "scans"),  # where finished PDFs are written
+    "TELEGRAM_BOT_TOKEN": "",  # from @BotFather; empty = no Telegram bot
+    "TELEGRAM_PASSWORD": "",  # coworkers send /register <password> once to use the bot
+    "TELEGRAM_ADMINS": [],  # Telegram user ids that need no password and may list/remove users
+    "TELEGRAM_SAVE_FOLDER": "Telegram",  # PDFs scanned from Telegram are also saved in SAVE_DIR/<this>; "" = not saved
+    "PRINT_ENGINE": "sumatra",  # sumatra = SumatraPDF prints to a Windows printer | ipp = send to PRINT_IPP_URL
+    "PRINT_PRINTER": "",  # Windows printer name for SumatraPDF; empty = the Windows default printer
+    "SUMATRA_PATH": "",  # SumatraPDF.exe; empty = look in %LOCALAPPDATA%, %USERPROFILE% and Program Files
+    "PRINT_IPP_URL": "",  # IPP printer queue, e.g. Mobility Print's http://127.0.0.1:9163/printers/NAME
     # Test overrides. {out} is the output file, {inputs} the space-separated page files.
     "SCAN_CMD": "",  # e.g. "python3 stub_scan.py scan {out}"
     "MERGE_CMD": "",  # e.g. "python3 stub_scan.py merge {out} {inputs}"
     "OPEN_CMD": "",  # e.g. "python3 stub_scan.py split {in} {outdir}"
+    "PRINT_CMD": "",  # instead of PRINT_IPP_URL: {in} {copies} {color} {pages} {media} {orientation} {quality} {scaling}
+    "OFFICE_CMD": "",  # instead of Microsoft Office: {in} {out}
+    "TELEGRAM_API": "https://api.telegram.org",
 }
+JSON_KEYS = {"PAUSE_APPS", "TELEGRAM_ADMINS"}  # environment variables holding JSON
 ALLOWED_DPI = {"100", "150", "200", "300", "600"}
 ALLOWED_MODES = {"color", "gray", "bw"}
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -59,13 +72,14 @@ def load_config():
         cfg.update(json.loads(path.read_text(encoding="utf-8")))
     for key in DEFAULTS:
         if key in os.environ:
-            cfg[key] = json.loads(os.environ[key]) if key == "PAUSE_APPS" else os.environ[key]
+            cfg[key] = json.loads(os.environ[key]) if key in JSON_KEYS else os.environ[key]
     cfg["PAUSE_RESUME_AFTER"] = int(cfg["PAUSE_RESUME_AFTER"])
     cfg["AUTH_SESSION_HOURS"] = float(cfg["AUTH_SESSION_HOURS"])
     if bool(cfg["AUTH_USER"]) != bool(cfg["AUTH_PASSWORD"]):
         raise ValueError("AUTH_USER and AUTH_PASSWORD must both be set (or both empty) in config.json")
     cfg["PORT"] = int(cfg["PORT"])
     cfg["TIMEOUT"] = int(cfg["TIMEOUT"])
+    cfg["TELEGRAM_ADMINS"] = [int(a) for a in cfg["TELEGRAM_ADMINS"]]
     return cfg
 
 
@@ -80,6 +94,8 @@ last_scan_end = None
 scan_jobs = {}  # job id -> {'state': running|done|error, ...}; polled by the page
 _epson = None
 pauser = pause_apps.Pauser(CFG["PAUSE_APPS"]) if CFG["PAUSE_APPS"] else None
+printer = printing.Printing(CFG["PRINT_ENGINE"], CFG["PRINT_IPP_URL"], CFG["PRINT_CMD"], CFG["TIMEOUT"],
+                            CFG["SUMATRA_PATH"], CFG["PRINT_PRINTER"])
 
 
 def epson_session():
@@ -152,6 +168,27 @@ def refresh_devices(force=False):
     return None
 
 
+def pick_device(requested=None):
+    """The scanner to use: (device, None), or (None, why it cannot scan now)."""
+    device = requested or CFG["SCANNER_DEVICE"] or (known_devices[0] if known_devices else "")
+    if not device and not CFG["SCAN_CMD"] and not use_epson():
+        err = dev_state["error"]
+        return None, f"Cannot list scanners: {err}" if err else "Still looking for scanners. Try again in a few seconds."
+    if device and device != CFG["SCANNER_DEVICE"] and device not in known_devices:
+        return None, "unknown scanner; refresh the list"
+    return device, None
+
+
+def start_scan(dpi, mode, device):
+    """Start a background scan. Returns its job id, or None if the scanner is busy."""
+    if not scan_lock.acquire(blocking=False):
+        return None
+    job = uuid.uuid4().hex
+    scan_jobs[job] = {"state": "running", "phase": "preparing"}
+    threading.Thread(target=scan_job, args=(job, dpi, mode, device), daemon=True).start()
+    return job
+
+
 def run_scan(out_img, dpi, mode, device):
     if CFG["SCAN_CMD"]:
         cmd = [p.replace("{out}", str(out_img)) for p in shlex.split(CFG["SCAN_CMD"])]
@@ -197,6 +234,21 @@ def run_split(pdf, outdir):
     else:
         cmd = naps2_base() + ["-n", "0", "-i", str(pdf), "-o", str(outdir / "page$(nnnn).jpg"), "-f"]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=CFG["TIMEOUT"])
+
+
+def split_to_images(pdf, outdir):
+    """Split a PDF into page images in outdir and return them in page order. Raises RuntimeError."""
+    try:
+        proc = run_split(pdf, outdir)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("opening the PDF timed out")
+    except OSError as e:
+        raise RuntimeError(f"cannot run NAPS2: {e}")
+    imgs = sorted((p for p in outdir.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")),
+                  key=lambda p: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)])
+    if proc.returncode != 0 or not imgs:
+        raise RuntimeError((proc.stderr or proc.stdout or "no pages found in PDF").strip())
+    return imgs
 
 
 def safe_pdf_name(name):
@@ -719,18 +771,12 @@ class Handler(BaseHTTPRequestHandler):
         dpi, mode = str(opts.get("dpi", "300")), opts.get("mode", "color")
         if dpi not in ALLOWED_DPI or mode not in ALLOWED_MODES:
             return self.send_json(400, {"error": "invalid dpi or mode"})
-        device = opts.get("device") or CFG["SCANNER_DEVICE"] or (known_devices[0] if known_devices else "")
-        if not device and not CFG["SCAN_CMD"] and not use_epson():
-            err = dev_state["error"]
-            return self.send_json(503, {"error": f"Cannot list scanners: {err}" if err
-                                        else "Still looking for scanners. Try again in a few seconds."})
-        if device and device != CFG["SCANNER_DEVICE"] and device not in known_devices:
-            return self.send_json(400, {"error": "unknown scanner; refresh the list"})
-        if not scan_lock.acquire(blocking=False):
+        device, err = pick_device(opts.get("device"))
+        if err:
+            return self.send_json(400 if err.startswith("unknown") else 503, {"error": err})
+        job = start_scan(dpi, mode, device)
+        if job is None:
             return self.send_json(409, {"error": "scanner busy"})
-        job = uuid.uuid4().hex
-        scan_jobs[job] = {"state": "running", "phase": "preparing"}
-        threading.Thread(target=scan_job, args=(job, dpi, mode, device), daemon=True).start()
         self.send_json(202, {"job": job})
 
     def handle_scan_status(self, job):
@@ -771,15 +817,9 @@ class Handler(BaseHTTPRequestHandler):
         tmp = Path(tempfile.mkdtemp(prefix="open-"))
         try:
             try:
-                proc = run_split(src, tmp)
-            except subprocess.TimeoutExpired:
-                return self.send_json(504, {"error": "opening timed out"})
-            except OSError as e:
-                return self.send_json(500, {"error": f"cannot run NAPS2: {e}"})
-            imgs = sorted((p for p in tmp.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")),
-                          key=lambda p: [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", p.name)])
-            if proc.returncode != 0 or not imgs:
-                return self.send_json(500, {"error": (proc.stderr or proc.stdout or "no pages found in PDF").strip()})
+                imgs = split_to_images(src, tmp)
+            except RuntimeError as e:
+                return self.send_json(504 if "timed out" in str(e) else 500, {"error": str(e)})
             if len(imgs) > MAX_OPEN_PAGES:
                 return self.send_json(400, {"error": f"PDF has {len(imgs)} pages; the limit is {MAX_OPEN_PAGES}"})
             ids = []
@@ -841,6 +881,10 @@ if __name__ == "__main__":
     refresh_devices(force=True)  # find scanners now so the first page load is instant
     if pauser:
         threading.Thread(target=resume_loop, daemon=True).start()
+    if CFG["TELEGRAM_BOT_TOKEN"]:
+        import sys
+        import telegram_bot
+        telegram_bot.start(sys.modules[__name__])
     server = ThreadingHTTPServer((CFG["HOST"], CFG["PORT"]), Handler)
     print(f"Scan page on http://localhost:{CFG['PORT']}  (saving PDFs to {SAVE_DIR})")
     try:

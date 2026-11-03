@@ -7,5 +7,12 @@
   "AUTH_USER": "",
   "AUTH_PASSWORD": "",
   "PAUSE_APPS": [],
-  "PAUSE_RESUME_AFTER": 120
+  "PAUSE_RESUME_AFTER": 120,
+  "TELEGRAM_BOT_TOKEN": "",
+  "TELEGRAM_PASSWORD": "",
+  "TELEGRAM_ADMINS": [],
+  "TELEGRAM_SAVE_FOLDER": "Telegram",
+  "PRINT_ENGINE": "sumatra",
+  "PRINT_PRINTER": "",
+  "SUMATRA_PATH": ""
 }

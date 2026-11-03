@@ -3,7 +3,7 @@
 A PDF24-style web page: press **Scan** to add a page from the flatbed (glass) using NAPS2's console CLI, arrange pages
 (drag and drop, undo), then download the PDF or save it into a folder on the scanner PC. Saved PDFs can be opened
 again to add or reorder pages. Python standard library only, no `pip install`, and it works offline (Tailwind and
-Font Awesome are bundled in `static/`; copy that folder along with `server.py`, `epson_scan.py`, `pause_apps.py` and `index.html`).
+Font Awesome are bundled in `static/`; copy that folder along with `server.py`, `epson_scan.py`, `pause_apps.py`, `printing.py`, `office_pdf.py`, `telegram_bot.py` and `index.html`).
 
 Made by [PolyLvst](https://github.com/PolyLvst).
 
@@ -75,6 +75,64 @@ A video viewer such as the Synology Surveillance Station client can double a sca
 - The page shows "Closing apps that slow the scan down…" while it waits (not counted in the time estimate).
 - If closing fails, the error goes to `server.log` and the scan continues.
 
+## Telegram bot (optional): print and scan from Telegram
+Send the bot a file and it prints it; send `/scan` and it scans from the glass and sends you a PDF. It only makes outgoing
+connections to api.telegram.org (no open port, no public address), so the PC just needs internet access.
+
+**Set up**
+1. Put the portable [SumatraPDF](https://www.sumatrapdfreader.org/download-free-pdf-viewer) (64-bit zip, unpack
+   `SumatraPDF.exe`) somewhere outside this folder, e.g. `C:\Users\<you>\SumatraPDF\SumatraPDF.exe`. A deploy with
+   `sendrepo` would delete it from inside the project folder.
+2. In Telegram, talk to [@BotFather](https://t.me/BotFather), send `/newbot` and copy the token it gives you.
+3. Find your own Telegram user id (e.g. send anything to [@userinfobot](https://t.me/userinfobot)).
+4. Put this in `config.json` and restart the server:
+   ```json
+   {
+     "TELEGRAM_BOT_TOKEN": "123456:ABC...",
+     "TELEGRAM_PASSWORD": "a password for your coworkers",
+     "TELEGRAM_ADMINS": [123456789],
+     "SUMATRA_PATH": "C:\\Users\\lenovo\\SumatraPDF\\SumatraPDF.exe",
+     "PRINT_PRINTER": "EPSON L3110 Series"
+   }
+   ```
+   `server.log` then shows `telegram: bot @yourbot is running`.
+
+**Who can use it**
+- Coworkers open the bot, press Start and send the password once (`/register <password>` works too). The bot deletes the
+  message with the password right away. They stay registered across restarts (in `telegram_users.json`, next to `server.py`).
+- 5 wrong passwords lock that Telegram account out for 10 minutes.
+- Changing `TELEGRAM_PASSWORD` signs everyone out; they register again with the new one.
+- `TELEGRAM_ADMINS` never need the password and can send `/users` (who registered) and `/remove <id or @username>`.
+  With no `TELEGRAM_PASSWORD`, only admins can use the bot.
+- The bot token is a secret: anyone who has it can read and send the bot's messages. Keep `config.json` private.
+
+**Printing**
+- Accepted: PDF; pictures (JPG, PNG, BMP, TIFF, and photos; send them "as File" for full quality); Word, Excel and
+  PowerPoint files (`.docx .doc .rtf .odt .xlsx .xls .csv .ods .pptx .ppt .odp`), which Microsoft Office on the PC turns
+  into a PDF in the background. Telegram lets bots fetch files up to 20 MB.
+- Before printing, the bot shows a settings message: copies, colour or grey, pages (all, or reply with e.g. `1-3, 5`),
+  paper size (A4, Letter, F4 = 8.5 x 13 in, Legal, if the printer has them; A4 first), orientation, and fit to page or
+  actual size. Each person's last settings (except pages) are remembered until the server restarts.
+- SumatraPDF prints the file itself to the Windows printer `PRINT_PRINTER` (empty = the Windows default printer):
+  page ranges, copies and the rest are applied without changing the document. "Actual size" only shrinks a page that
+  would not fit on the paper; "Landscape"/"Portrait" turn the content, the paper stays as it is. Jobs appear in the
+  Windows print queue (not in Mobility Print's job list); `server.log` records who printed what.
+- Alternative: `"PRINT_ENGINE": "ipp"` with `PRINT_IPP_URL` (e.g. Mobility Print's queue
+  `http://127.0.0.1:9163/printers/EPSON+L3110+Series`) sends jobs over IPP instead. Mobility Print only offers copies,
+  colour and paper, has no page ranges (the server then cuts pages out with NAPS2, which turns them into pictures), and
+  pictures are converted to PDF first.
+- Office files: the server opens them read-only with macros off and quits the Word/Excel it started. A file that asks
+  for a password fails with a message. If a conversion hangs for `TIMEOUT` seconds, only the Office process started
+  for it is ended. PowerPoint is never closed if you had it open yourself.
+
+**Scanning**
+- `/scan` scans one page (default 200 dpi colour; `/scan 300 gray` etc.). After each page: Scan next page, Finish as
+  PDF, or Cancel. The PDF is sent to you and also saved in `scans/Telegram/` (`TELEGRAM_SAVE_FOLDER`; `""` = don't save),
+  so it shows on the web page too.
+- The bot and the web page share the scanner: if one is scanning, the other is told it is busy.
+- An unfinished scan is dropped after 30 minutes; a print settings message expires after 15 minutes.
+- `/status` shows whether the scanner is free and the printer reachable; `/cancel` stops what you started.
+
 ## Autostart
 Double-click `install-task.bat` (as the user who is logged in at the scanner PC). It creates the `naps2-wrapper` task
 (trigger **At log on**, action `run-server.bat` without a console window, output in `server.log`) and starts it now. `install-task.bat uninstall`
@@ -100,7 +158,7 @@ OPEN_CMD="python3 stub_scan.py split {in} {outdir}" python3 server.py
 ```
 
 ## Config
-`config.json` keys or environment variables of the same name: `NAPS2_PATH`, `SCANNER_DRIVER`, `SCANNER_DEVICE`, `SCAN_ENGINE` (`wia` default, or `epson`), `AUTH_USER` / `AUTH_PASSWORD` / `AUTH_SESSION_HOURS`, `PAUSE_APPS` / `PAUSE_RESUME_AFTER`, `EPSON_SCAN2_PATH` (path to `es2launcher.exe`; empty = usual Program Files folders), `PORT`, `HOST`, `TIMEOUT`, `SAVE_DIR` (default `scans/`), and the test overrides `SCAN_CMD`, `MERGE_CMD`, `OPEN_CMD`.
+`config.json` keys or environment variables of the same name: `NAPS2_PATH`, `SCANNER_DRIVER`, `SCANNER_DEVICE`, `SCAN_ENGINE` (`wia` default, or `epson`), `AUTH_USER` / `AUTH_PASSWORD` / `AUTH_SESSION_HOURS`, `PAUSE_APPS` / `PAUSE_RESUME_AFTER`, `EPSON_SCAN2_PATH` (path to `es2launcher.exe`; empty = usual Program Files folders), `TELEGRAM_BOT_TOKEN` / `TELEGRAM_PASSWORD` / `TELEGRAM_ADMINS` / `TELEGRAM_SAVE_FOLDER`, `PRINT_ENGINE` (`sumatra` default, or `ipp`) / `PRINT_PRINTER` / `SUMATRA_PATH` / `PRINT_IPP_URL`, `PORT`, `HOST`, `TIMEOUT`, `SAVE_DIR` (default `scans/`), and the test overrides `SCAN_CMD`, `MERGE_CMD`, `OPEN_CMD`, `PRINT_CMD` (`{in} {copies} {color} {pages} {media} {orientation} {quality} {scaling}`), `OFFICE_CMD` (`{in} {out}`) and `TELEGRAM_API` (Bot API base URL).
 
 ## NAPS2 commands the server runs
 Checked against NAPS2 8.4.1 on Windows with an Epson L3110 (`-n 0` makes `-i` import only, without scanning):
