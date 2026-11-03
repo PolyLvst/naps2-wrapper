@@ -31,6 +31,7 @@ MAX_DOWNLOAD = 20 * 1024 * 1024  # Bot API limit for files a bot can download
 MAX_UPLOAD = 50 * 1024 * 1024  # Bot API limit for files a bot can send
 SCAN_IDLE = 30 * 60  # an unfinished scan is dropped after this long without a tap
 PRINT_IDLE = 15 * 60  # a print dialog expires after this long
+READY_IDLE = 60 * 60  # a finished scan can be printed with its "Print it" button for this long
 STALE_UPDATE = 10 * 60  # messages older than this (sent while the server was down) are ignored
 REGISTER_ATTEMPTS, REGISTER_LOCKOUT = 5, 10 * 60
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".gif"}
@@ -45,17 +46,21 @@ PHASES = {
     "waiting": "Waiting for the scanner to be ready…",
     "scanning": "Scanning…",
 }
-COMMANDS = [("scan", "Scan from the glass to a PDF"), ("status", "Is the scanner or printer busy?"),
+COMMANDS = [("menu", "Show the buttons"), ("scan", "Scan from the glass to a PDF"), ("status", "Is the scanner or printer busy?"),
             ("cancel", "Stop the current scan or print"), ("help", "What this bot can do"),
             ("logout", "Stop using the bot on this account")]
-HELP = """🖨 Scanner & printer bot
+MENU_TEXT = """🖨 Scanner & printer
 
-• Print: send a PDF, a picture, or a Word, Excel or PowerPoint file. You can choose copies, colour, pages, paper and more before it prints. (Send pictures "as File" for full quality.)
-• /scan: scan a page from the glass. Add more pages, then get them as one PDF. Options: /scan 300 gray (dpi 100, 150, 200, 300 or 600; color, gray or bw). Default: 200 dpi colour.
-• /status: is the scanner or printer busy?
-• /cancel: stop what you're doing.
-• /logout: stop using the bot on this account."""
-ADMIN_HELP = "\n\nAdmin: /users lists who registered, /remove <id or @username> removes someone."
+To print: send me a PDF, a picture, or a Word, Excel or PowerPoint file.
+To scan: put the page on the glass and tap Scan."""
+HELP = """❓ Help
+
+• Print: tap Print to see how, or just send a PDF, a picture, or a Word, Excel or PowerPoint file. Before it prints you choose copies, colour, pages, paper and more with buttons. (Send pictures "as File" for full quality.)
+• Scan: tap Scan to scan a page from the glass. Add more pages, then tap Finish to get them as one PDF. Scan settings changes the resolution and colour.
+• Status: is the scanner free and the printer ready?
+
+Commands work too: /menu, /scan (e.g. /scan 300 gray), /status, /cancel, /logout."""
+ADMIN_HELP = "\n\nAdmin: Users in the menu (or /users, /remove <id or @username>)."
 
 
 def log(msg):
@@ -251,6 +256,8 @@ class Chat:
         self.scan = None  # {"sid", "pages", "dpi", "mode", "last", "buttons"}
         self.prints = {}  # token -> print job
         self.settings = None  # this user's last print settings
+        self.scan_prefs = {"dpi": "200", "mode": "color"}  # resolution and colour for the next scan
+        self.ready = {}  # token -> finished scan kept for its "Print it" button: {"pdf", "name", "pages", "msg", ...}
 
 
 class Bot:
@@ -260,6 +267,10 @@ class Bot:
         self.users = Users(srv.HERE / "telegram_users.json", cfg["TELEGRAM_PASSWORD"], cfg["TELEGRAM_ADMINS"])
         self.chats, self.chats_lock = {}, threading.Lock()
         self.failed, self.failed_lock = {}, threading.Lock()  # user id -> [failures, locked until]
+        # files of scans/prints that were open when the server last stopped (only this bot uses these prefixes)
+        for prefix in ("tg-ready-", "tg-print-", "tg-scan-"):
+            for old in Path(tempfile.gettempdir()).glob(prefix + "*"):
+                shutil.rmtree(old, ignore_errors=True)
 
     # --- plumbing ------------------------------------------------------------------------------------------
     def chat(self, chat_id):
@@ -363,6 +374,11 @@ class Bot:
                     if n:
                         self.quiet("sendMessage", chat_id=chat_id,
                                    text=f"Your unfinished scan ({plural(n, 'page')}) was dropped after 30 minutes.")
+                for tok, r in list(c.ready.items()):
+                    if now - r["created"] > READY_IDLE:
+                        self.drop_ready(c, tok)
+                        self.quiet("editMessageReplyMarkup", chat_id=chat_id, message_id=r["msg"],
+                                   reply_markup=self.after_scan_keyboard(None))
                 for tok, job in list(c.prints.items()):
                     if now - job["created"] > PRINT_IDLE:
                         self.drop_print(c, tok)
@@ -382,11 +398,13 @@ class Bot:
             cmd, arg = head.split("@")[0].lower(), arg.strip()
         if not self.users.allowed(uid):
             return self.stranger(c, chat_id, msg, cmd, arg, text)
-        if cmd in ("/start", "/help"):
-            self.send(chat_id, HELP + (ADMIN_HELP if uid in self.users.admins else ""))
+        if cmd in ("/start", "/menu"):
+            self.send_menu(c, chat_id, uid)
+        elif cmd == "/help":
+            self.send(chat_id, self.help_text(uid), keyboard([[button("☰ Menu", "m:menu")]]))
         elif cmd == "/register":
             self.quiet("deleteMessage", chat_id=chat_id, message_id=msg["message_id"])
-            self.send(chat_id, "You are already registered. /help shows what you can do.")
+            self.send_menu(c, chat_id, uid, "You are already registered.\n\n" + MENU_TEXT)
         elif cmd == "/scan":
             self.cmd_scan(c, chat_id, arg)
         elif cmd == "/status":
@@ -407,9 +425,9 @@ class Bot:
         elif isinstance(c.awaiting, tuple) and text and not cmd:
             self.set_range(c, chat_id, text)
         elif cmd:
-            self.send(chat_id, "Unknown command. /help shows what I can do.")
+            self.send_menu(c, chat_id, uid, "I don't know that command. Use the buttons:")
         else:
-            self.send(chat_id, "Send me a file to print it, or /scan to scan. /help shows more.")
+            self.send_menu(c, chat_id, uid)
 
     def stranger(self, c, chat_id, msg, cmd, arg, text):
         if not self.users.password:
@@ -441,7 +459,7 @@ class Bot:
             self.users.add(user)
             c.awaiting = None
             log(f"registered {describe(uid, self.users.users[str(uid)])}")
-            return self.send(chat_id, "✅ You're registered.\n\n" + HELP)
+            return self.send_menu(c, chat_id, uid, "✅ You're registered.\n\n" + MENU_TEXT)
         count = 0 if until else count  # a lockout that has ended starts the count again
         count += 1
         locked = count >= REGISTER_ATTEMPTS
@@ -460,12 +478,18 @@ class Bot:
             if gone:
                 log(f"admin removed {describe(*gone)}")
             return self.send(chat_id, f"Removed {describe(*gone)}." if gone else f"No registered user {arg}.")
+        self.send(chat_id, self.users_text())
+
+    def users_text(self):
         lines = [f"• {describe(uid, u)}, since {u.get('since', '?')}" for uid, u in self.users.users.items()]
         admins = ", ".join(str(a) for a in sorted(self.users.admins)) or "none"
-        self.send(chat_id, (f"Registered ({len(lines)}):\n" + "\n".join(lines) if lines else "Nobody has registered yet.")
-                  + f"\n\nAdmins (config.json): {admins}")
+        return ((f"👥 Registered ({len(lines)}):\n" + "\n".join(lines) if lines else "👥 Nobody has registered yet.")
+                + f"\n\nAdmins (config.json): {admins}")
 
     def cmd_status(self, chat_id):
+        self.send(chat_id, self.status_text(), keyboard([[button("☰ Menu", "m:menu")]]))
+
+    def status_text(self):
         srv = self.srv
         scanner = "busy (a scan is running)" if srv.scan_lock.locked() else "free"
         try:
@@ -473,7 +497,7 @@ class Bot:
             printer = f"{opts['name']}, reachable"
         except printing.PrintError as e:
             printer = f"not available: {e}"
-        self.send(chat_id, f"Scanner: {scanner}\nPrinter: {printer}")
+        return f"ℹ️ Status ({datetime.now():%H:%M:%S})\n\nScanner: {scanner}\nPrinter: {printer}"
 
     def cmd_cancel(self, c, chat_id, quiet=False):
         had = bool(c.scan or c.prints)
@@ -491,22 +515,109 @@ class Bot:
             return self.send(chat_id, "Send /register <password> to use this bot.")
         msg_id = cb["message"]["message_id"]
         parts = (cb.get("data") or "").split(":")
-        if parts[0] == "s" and len(parts) == 3:
+        if parts[0] == "m":
+            self.menu_button(c, chat_id, msg_id, cb["from"]["id"], parts[1:])
+        elif parts[0] == "s" and len(parts) == 3:
             self.scan_button(c, chat_id, msg_id, parts[1], parts[2])
+        elif parts[0] == "r" and len(parts) == 2:
+            self.print_ready(c, chat_id, parts[1])
         elif parts[0] == "p" and len(parts) == 3:
             self.print_button(c, chat_id, msg_id, parts[1], parts[2], cb["from"])
 
+    # --- the button menu -----------------------------------------------------------------------------------
+    def help_text(self, uid):
+        return HELP + (ADMIN_HELP if uid in self.users.admins else "")
+
+    def menu_keyboard(self, c, uid):
+        p = c.scan_prefs
+        rows = [[button("🖨 Print", "m:print"), button(f"📄 Scan ({p['dpi']} dpi, {MODE_TEXT[p['mode']]})", "m:scan")],
+                [button("⚙️ Scan settings", "m:set"), button("ℹ️ Status", "m:status")],
+                [button("❓ Help", "m:help")] + ([button("👥 Users", "m:users")] if uid in self.users.admins else [])]
+        if c.scan or c.prints:
+            rows.append([button("✖ Cancel what's running", "m:cancel")])
+        return keyboard(rows)
+
+    def send_menu(self, c, chat_id, uid, text=MENU_TEXT):
+        return self.send(chat_id, text, self.menu_keyboard(c, uid))
+
+    def settings_keyboard(self, c):
+        p = c.scan_prefs
+        return keyboard([
+            [button(tick(d == p["dpi"]) + d, f"m:dpi:{d}") for d in DPIS],
+            [button(tick(m == p["mode"]) + MODE_TEXT[m].capitalize(), f"m:mode:{m}") for m in ("color", "gray", "bw")],
+            [button("📄 Scan now", "m:scan"), button("« Back", "m:back")]])
+
+    PRINT_TEXT = """🖨 Print
+
+Send me the file in this chat:
+1. Tap 📎 (the paperclip next to the message box).
+2. Choose File for a PDF, Word, Excel or PowerPoint file, or Gallery for a photo. (For a photo, "File" gives better quality.)
+3. Send it. I'll show the print settings (copies, colour, pages, paper) and you tap Print.
+
+You can also forward a file from another chat to me."""
+
+    SETTINGS_TEXT = ("⚙️ Scan settings\n\nResolution in dpi: 200 is fine for documents, 300 for small print, "
+                     "600 for photos (slow, big files).")
+
+    def menu_button(self, c, chat_id, msg_id, uid, parts):
+        action, arg = parts[0] if parts else "", parts[1] if len(parts) > 1 else ""
+        back = keyboard([[button("« Back", "m:back")]])
+        if action == "menu":  # from another message: a fresh menu at the bottom of the chat
+            self.send_menu(c, chat_id, uid)
+        elif action == "back":
+            self.edit(chat_id, msg_id, MENU_TEXT, self.menu_keyboard(c, uid))
+        elif action == "scan":
+            if c.scan:  # a scan is open: add a page to it rather than dropping its pages
+                c.scan["last"] = time.monotonic()
+                self.scan_page(c, chat_id)
+            else:
+                self.begin_scan(c, chat_id)
+        elif action == "print":
+            self.edit(chat_id, msg_id, self.PRINT_TEXT, back)
+        elif action == "set":
+            self.edit(chat_id, msg_id, self.SETTINGS_TEXT, self.settings_keyboard(c))
+        elif action in ("dpi", "mode"):
+            if (action == "dpi" and arg in DPIS) or (action == "mode" and arg in MODE_TEXT):
+                c.scan_prefs[action] = arg
+            self.edit(chat_id, msg_id, self.SETTINGS_TEXT, self.settings_keyboard(c))
+        elif action == "status":
+            self.edit(chat_id, msg_id, self.status_text(),
+                      keyboard([[button("🔄 Refresh", "m:status"), button("« Back", "m:back")]]))
+        elif action == "help":
+            self.edit(chat_id, msg_id, self.help_text(uid), back)
+        elif action == "cancel":
+            self.cmd_cancel(c, chat_id, quiet=True)
+            self.edit(chat_id, msg_id, "Cancelled.\n\n" + MENU_TEXT, self.menu_keyboard(c, uid))
+        elif uid in self.users.admins and action in ("users", "rm", "rmok"):
+            self.users_button(chat_id, msg_id, action, arg)
+
+    def users_button(self, chat_id, msg_id, action, arg):
+        users = self.users.users
+        if action == "rm" and arg in users:
+            return self.edit(chat_id, msg_id, f"Remove {describe(arg, users[arg])}? They can register again with the password.",
+                             keyboard([[button("Yes, remove", f"m:rmok:{arg}"), button("No", "m:users")]]))
+        if action == "rmok" and arg in users:
+            gone = self.users.remove(arg)
+            if gone:
+                log(f"admin removed {describe(*gone)}")
+        rows = [[button(f"✖ {u.get('name') or uid}", f"m:rm:{uid}")] for uid, u in list(users.items())[:40]]
+        rows.append([button("« Back", "m:back")])
+        self.edit(chat_id, msg_id, self.users_text() + ("\n\nTap someone to remove them." if users else ""), keyboard(rows))
+
     # --- scanning ------------------------------------------------------------------------------------------
     def cmd_scan(self, c, chat_id, arg):
-        dpi, mode = "200", "color"
         for word in arg.lower().replace("dpi", " ").split():
             if word in DPIS:
-                dpi = word
+                c.scan_prefs["dpi"] = word
             elif word in MODES:
-                mode = MODES[word]
+                c.scan_prefs["mode"] = MODES[word]
             else:
                 return self.send(chat_id, f"Don't know '{word}'. Example: /scan 300 gray (dpi {', '.join(DPIS)}; "
-                                          "color, gray or bw)")
+                                          "color, gray or bw)", keyboard([[button("⚙️ Scan settings", "m:set")]]))
+        self.begin_scan(c, chat_id)
+
+    def begin_scan(self, c, chat_id):
+        dpi, mode = c.scan_prefs["dpi"], c.scan_prefs["mode"]
         if c.scan and c.scan["pages"]:
             self.send(chat_id, f"Starting a new scan; the unfinished one ({plural(len(c.scan['pages']), 'page')}) "
                                "was dropped.")
@@ -610,15 +721,48 @@ class Bot:
                 target = srv.unique_path(folder, name)
                 shutil.copyfile(pdf, target)
                 saved = f"\nAlso saved on the scanner PC: {srv.rel_of(target)}"
+            tok = self.keep_ready(c, pdf, name, n) if srv.printer.configured() else None
+            kb = self.after_scan_keyboard(tok)
             if pdf.stat().st_size > MAX_UPLOAD:
-                self.edit(chat_id, status, f"The PDF is {pdf.stat().st_size // 2**20} MB, too big for Telegram (50 MB)."
-                          + (saved or " Scan at a lower dpi."))
+                msg = self.edit(chat_id, status, f"The PDF is {pdf.stat().st_size // 2**20} MB, too big for Telegram "
+                                "(50 MB)." + (saved or " Scan at a lower dpi."), kb)
             else:
-                self.send_file(chat_id, pdf, name, f"{plural(n, 'page')}.{saved}")
+                msg = self.send_file(chat_id, pdf, name, f"{plural(n, 'page')}.{saved}", kb)
                 self.quiet("deleteMessage", chat_id=chat_id, message_id=status)
+            if tok:
+                c.ready[tok]["msg"] = msg
             self.drop_scan(c, chat_id)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def after_scan_keyboard(self, ready_tok):
+        rows = [[button("🖨 Print it", f"r:{ready_tok}")]] if ready_tok else []
+        return keyboard(rows + [[button("📄 New scan", "m:scan"), button("☰ Menu", "m:menu")]])
+
+    def keep_ready(self, c, pdf, name, pages):
+        """Keep a copy of a finished scan so its "Print it" button works for READY_IDLE."""
+        keep = Path(tempfile.mkdtemp(prefix="tg-ready-"))
+        shutil.copyfile(pdf, keep / "scan.pdf")
+        tok = secrets.token_hex(4)
+        c.ready[tok] = {"dir": keep, "pdf": keep / "scan.pdf", "name": name, "pages": pages,
+                        "created": time.monotonic(), "msg": None}
+        return tok
+
+    def drop_ready(self, c, tok):
+        r = c.ready.pop(tok, None)
+        if r:
+            shutil.rmtree(r["dir"], ignore_errors=True)
+
+    def print_ready(self, c, chat_id, tok):
+        r = c.ready.get(tok)
+        if not r:
+            return self.send(chat_id, "That scan is no longer kept for printing (after an hour, or the server restarted). "
+                                      "Send me the PDF to print it.")
+        r["created"] = time.monotonic()  # printing it again later keeps it a while longer
+        tmp = Path(tempfile.mkdtemp(prefix="tg-print-"))
+        pdf = tmp / "print.pdf"
+        shutil.copyfile(r["pdf"], pdf)  # the dialog's job owns (and later deletes) its own copy
+        self.open_dialog(c, chat_id, r["name"], tmp, pdf, r["pages"])
 
     def drop_scan(self, c, chat_id):
         s, c.scan = c.scan, None
@@ -670,6 +814,16 @@ class Bot:
                 subprocess.SubprocessError) as e:
             shutil.rmtree(tmp, ignore_errors=True)
             return self.edit(chat_id, status, f"❌ {name}: {e}")
+        self.open_dialog(c, chat_id, name, tmp, pdf, pages, status)
+
+    def open_dialog(self, c, chat_id, name, tmp, pdf, pages, status=None):
+        """Show the print settings for a file ready to print (tmp is the job's folder, deleted when it ends)."""
+        try:
+            options = self.srv.printer.options()
+        except printing.PrintError as e:
+            shutil.rmtree(tmp, ignore_errors=True)
+            text = f"❌ {name}: {e}"
+            return self.edit(chat_id, status, text) if status else self.send(chat_id, text)
         settings = {**printing.DEFAULT_SETTINGS, **(c.settings or {}), "pages": None}
         if settings["media"] not in options["media"]:
             settings["media"] = options["media_default"]  # the printer's name for A4, or its default
@@ -678,7 +832,8 @@ class Bot:
         job = {"name": name, "tmp": tmp, "pdf": pdf, "pages": pages, "settings": settings, "options": options,
                "msg": status, "created": time.monotonic()}
         c.prints[tok] = job
-        job["msg"] = self.edit(chat_id, status, self.dialog_text(job), self.dialog_keyboard(tok, job))
+        text, kb = self.dialog_text(job), self.dialog_keyboard(tok, job)
+        job["msg"] = self.edit(chat_id, status, text, kb) if status else self.send(chat_id, text, kb)
 
     def dialog_text(self, job, footer="Choose the settings, then tap Print."):
         pages = plural(job["pages"], "page") if job["pages"] else "? pages"
@@ -782,7 +937,8 @@ class Bot:
         log(f"{who or user['id']} printed {job['name']}" + (f" (job {job_id})" if job_id else ""))
         self.drop_print(c, None, job)
         number = f" (job {job_id})" if job_id else ""
-        self.send(chat_id, f"✅ Sent {job['name']} to the printer{number}.\n{self.summary(job)}")
+        self.send(chat_id, f"✅ Sent {job['name']} to the printer{number}.\n{self.summary(job)}",
+                  keyboard([[button("☰ Menu", "m:menu")]]))
         self.quiet("deleteMessage", chat_id=chat_id, message_id=msg)
 
     def cut_pages(self, job, ranges):

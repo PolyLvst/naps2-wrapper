@@ -125,10 +125,17 @@ connections to api.telegram.org (no open port, no public address), so the PC jus
   for a password fails with a message. If a conversion hangs for `TIMEOUT` seconds, only the Office process started
   for it is ended. PowerPoint is never closed if you had it open yourself.
 
+**Buttons**
+- Everything works with buttons: Start (or any message) shows a menu with **Scan**, **Scan settings** (resolution and
+  colour), **Status** and **Help**, plus **Users** for admins (tap someone to remove them). The commands (`/scan 300 gray`,
+  `/status`, `/cancel`, `/menu`, `/logout`) still work.
+
 **Scanning**
 - `/scan` scans one page (default 200 dpi colour; `/scan 300 gray` etc.). After each page: Scan next page, Finish as
   PDF, or Cancel. The PDF is sent to you and also saved in `scans/Telegram/` (`TELEGRAM_SAVE_FOLDER`; `""` = don't save),
   so it shows on the web page too.
+- The finished PDF has a **Print it** button: it opens the print settings for that scan (copies, pages, ...), so a scan
+  can be printed without sending it back. It works for an hour after the scan (until the server restarts).
 - The bot and the web page share the scanner: if one is scanning, the other is told it is busy.
 - An unfinished scan is dropped after 30 minutes; a print settings message expires after 15 minutes.
 - `/status` shows whether the scanner is free and the printer reachable; `/cancel` stops what you started.
